@@ -378,7 +378,22 @@ with tab1:
             }
         )
 
-    out_df = pd.DataFrame(rows).astype(str)
+    out_df = pd.DataFrame(rows)
+    # 숫자형으로 해석 가능한 열은 숫자 타입으로 변환하여 Streamlit에서 숫자 기준 정렬이 되도록 함
+    numeric_cols = [
+        "공격횟수",
+        "총점",
+        "평균점수",
+        "확정 격전지점수",
+        "확정 추가점수",
+        "확정 1초당 점수",
+        "확정 추가 초",
+        "최대획득점수",
+    ]
+    for col in numeric_cols:
+        if col in out_df.columns:
+            out_df[col] = pd.to_numeric(out_df[col], errors="coerce")
+
     st.dataframe(out_df, use_container_width=True)
 
     if sel_date != "전체":
@@ -511,7 +526,8 @@ with tab1:
                     else "추정불가"
                 )
             compare_rows.append(row)
-        compare_df = pd.DataFrame(compare_rows).astype(str)
+        compare_df = pd.DataFrame(compare_rows)
+        # 비교표는 날짜별로 문자열(예: "100/0", "추정불가")을 포함하므로 기본 생성 후 표시
         st.dataframe(compare_df, use_container_width=True)
 
 
