@@ -187,7 +187,11 @@ def choose_top_pairs(
 ) -> List[Tuple[float, int]]:
     if not candidates:
         return []
-    commons = common_df_all[common_df_all["nickname"].astype(str) == str(nickname)]
+    # 닉네임 매칭은 정규화된 컬럼(nick_norm)을 사용
+    if "nick_norm" in common_df_all.columns:
+        commons = common_df_all[common_df_all["nick_norm"].astype(str) == str(nickname)]
+    else:
+        commons = common_df_all[common_df_all["nickname"].astype(str) == str(nickname)]
     if commons.empty:
         return sorted(candidates, key=lambda x: x[0], reverse=True)[:2]
     target_battles = commons["confirmed_battle"].dropna().astype(float).tolist()
@@ -207,6 +211,7 @@ def infer_candidates(scores: List[int]) -> List[Tuple[float, int]]:
     for b2 in range(int(BATTLE_MIN_DEFAULT * 2), int(BATTLE_MAX_DEFAULT * 2) + 1):
         battle = b2 / 2.0
         pps = int(1000 + 10 * float(battle))
+        # 우선 기본 후보들로 검사
         for bonus in BONUS_CANDIDATES_DEFAULT:
             ok = True
             for sc in scores:
@@ -221,23 +226,58 @@ def infer_candidates(scores: List[int]) -> List[Tuple[float, int]]:
     if cand:
         return cand
     if scores:
-        non_bonus = [s for s in scores if s not in BONUS_CANDIDATES_DEFAULT]
-        if non_bonus:
-            valid5 = [s for s in non_bonus if s % 5 == 0]
-            m = min(valid5) if valid5 else min(non_bonus)
-        else:
-            m = min(scores)
-        for b2 in range(int(BATTLE_MIN_DEFAULT * 2), int(BATTLE_MAX_DEFAULT * 2) + 1):
-            battle = b2 / 2.0
-            pps = int(1000 + 10 * float(battle))
-            for bonus in BONUS_CANDIDATES_DEFAULT:
-                if m == int(bonus):
-                    cand.append((battle, int(bonus)))
-                    break
-                diff = int(m) - int(bonus)
-                if diff >= 0 and diff % pps == 0:
-                    cand.append((battle, int(bonus)))
-                    break
+        # 추가점수 후보 확장 로직 (쌍별 차이 우선):
+        # 관측된 점수들 중 두 점수의 차이를 구해 차이가 작은 쌍부터 검사합니다.
+        # 각 쌍에 대해 가능한 격전지(pps)를 검사하고, diff % pps == 0 이면
+        # 보너스 후보(bonus)를 0..3000 (5 단위) 범위에서 찾아 (score - bonus) % pps == 0
+        # 을 만족하는 보너스들을 후보로 등록합니다. 최초로 후보를 찾은 차이값 레벨에서
+        # 발견된 후보들만 사용하도록 하여 "차이가 적을수록 우선" 규칙을 반영합니다.
+        scores_unique = sorted(set(int(s) for s in scores))
+        # 모든 쌍의 차이를 계산하고 차이 오름차순으로 정렬
+        pairs = []
+        for i in range(len(scores_unique)):
+            for j in range(i + 1, len(scores_unique)):
+                diff = abs(scores_unique[j] - scores_unique[i])
+                pairs.append((diff, scores_unique[i], scores_unique[j]))
+        pairs.sort(key=lambda x: x[0])
+
+        max_bonus_check = 3000
+        bonus_step = 5
+        # 데이터에서 관측된(작은) 점수들 중 추가점수로 사용될 가능성이 있는 값들을 후보에 포함
+        observed_bonus_vals = sorted(
+            {
+                int(s)
+                for s in scores
+                if 0 <= int(s) <= max_bonus_check and int(s) % bonus_step == 0
+            }
+        )
+        # 기본 허용값과 관측값 병합(중복 제거)
+        merged_bonus_candidates = sorted(
+            set(BONUS_CANDIDATES_DEFAULT).union(observed_bonus_vals)
+        )
+        found = False
+        for diff, s1, s2 in pairs:
+            if diff == 0:
+                continue
+            local_cands: List[Tuple[float, int]] = []
+            for b2 in range(
+                int(BATTLE_MIN_DEFAULT * 2), int(BATTLE_MAX_DEFAULT * 2) + 1
+            ):
+                battle = b2 / 2.0
+                pps = int(1000 + 10 * float(battle))
+                if diff % pps != 0:
+                    continue
+                # diff가 pps의 배수라면 s1과 s2는 같은 bonus 모듈러 값을 가짐
+                # bonus는 0..max_bonus_check 범위에서 5단위 값만 고려
+                for bonus in merged_bonus_candidates:
+                    if (s1 - bonus) % pps == 0 and (s2 - bonus) % pps == 0:
+                        local_cands.append((battle, int(bonus)))
+            if local_cands:
+                # 해당 (가장 작은) 차이에 대해 발견된 후보만 채택
+                cand.extend(local_cands)
+                found = True
+            if found:
+                break
     return cand
 
 
@@ -257,13 +297,50 @@ if all_df.empty:
     st.info("데이터가 없습니다.")
     st.stop()
 
-dates = sorted(all_df["date"].unique())
-sel_date = st.sidebar.selectbox("날짜 선택", ["전체"] + dates, index=0)
+# 날짜 정규화 컬럼 추가 (예: 2026-01-17 -> 20260117)
+all_df["date_norm"] = all_df["date"].astype(str).str.replace(r"\D", "", regex=True)
+common_df_all["date_norm"] = (
+    common_df_all.get("date", pd.Series(dtype=str))
+    .astype(str)
+    .str.replace(r"\D", "", regex=True)
+)
+# 닉네임 정규화(공백 제거)
+all_df["nick_norm"] = all_df["nickname"].astype(str).str.strip()
+common_df_all["nick_norm"] = (
+    common_df_all.get("nickname", pd.Series(dtype=str)).astype(str).str.strip()
+)
 
-filtered = all_df if sel_date == "전체" else all_df[all_df["date"] == str(sel_date)]
+dates = sorted(all_df["date"].unique())
+mode = st.sidebar.selectbox("날짜 모드", ["단일 날짜", "여러 날짜(선택)"], index=0)
+if mode == "단일 날짜":
+    # 기본값: 보스(또는 데이터 행)가 1개 초과인 가장 최신 날짜를 우선으로 선택
+    date_norms = all_df["date_norm"].astype(str).unique().tolist()
+    # map date_norm back to original presentation in `dates`
+    norms_to_dates = {str(d).replace('-', '').replace('.', ''): str(d) for d in dates}
+    # find candidate dates (역순으로) that have more than one unique boss_order
+    default_index = len(dates) - 1
+    for i in range(len(dates) - 1, -1, -1):
+        d_orig = dates[i]
+        d_norm = str(d_orig).replace('-', '').replace('.', '')
+        df_d = all_df[all_df["date_norm"] == d_norm]
+        if df_d["boss_order"].nunique() > 1:
+            default_index = i
+            break
+    sel_date = st.sidebar.selectbox("날짜 선택", dates, index=default_index)
+    sel_dates = [str(sel_date)]
+else:
+    sel_dates = st.sidebar.multiselect(
+        "날짜 선택(여러)", options=dates, default=dates if dates else []
+    )
+
+filtered = all_df[
+    all_df["date_norm"].isin(
+        [str(d).replace('-', '').replace('.', '') for d in sel_dates]
+    )
+]
 
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["닉네임 추정 결과", "시각화", "원본 데이터", "🧮 계산기"]
+    ["닉네임 추정 결과", "시각화 및 미참여", "원본 데이터", "🧮 계산기"]
 )
 
 
@@ -271,7 +348,7 @@ with tab1:
     st.subheader("닉네임별 결과")
     common_by_key: Dict[Tuple[str, str], Dict[str, Optional[float]]] = {}
     for _, r in common_df_all.iterrows():
-        key = (str(r.get("nickname", "")).strip(), str(r.get("date", "")))
+        key = (str(r.get("nick_norm", "")).strip(), str(r.get("date_norm", "")))
         common_by_key[key] = {
             "battle": (
                 float(r["confirmed_battle"])
@@ -290,123 +367,175 @@ with tab1:
             ),
         }
 
-    nicknames = sorted(filtered["nickname"].dropna().astype(str).unique())
+    # 닉네임 비교/출력에는 정규화된 닉네임 사용
+    nicknames = sorted(filtered["nick_norm"].dropna().astype(str).unique())
     rows: List[Dict[str, object]] = []
     inferred: Dict[str, Dict[str, object]] = {}
-    for nick in nicknames:
-        g = filtered[filtered["nickname"].astype(str) == str(nick)]
-        total = int(g["score"].sum())
-        attacks = int(len(g))
-        avg = int(round(total / attacks)) if attacks > 0 else 0
+    # 단일 날짜 모드일 때는 상세 계산, 여러 날짜 모드일 때는 비교 테이블용 요약을 출력
+    if mode == "단일 날짜":
+        for nick in nicknames:
+            g = filtered[filtered["nick_norm"].astype(str) == str(nick)]
+            total = int(g["score"].sum())
+            attacks = int(len(g))
+            avg = int(round(total / attacks)) if attacks > 0 else 0
 
-        ckey = (nick, str(sel_date))
-        confirmed = common_by_key.get(ckey, {}) if sel_date != "전체" else {}
-        c_battle = confirmed.get("battle")
-        c_bonus = confirmed.get("bonus")
-        c_extra = confirmed.get("extra")
+            ckey = (
+                str(nick).strip(),
+                str(sel_dates[0]).replace('-', '').replace('.', ''),
+            )
+            confirmed = common_by_key.get(ckey, {})
+            c_battle = confirmed.get("battle")
+            c_bonus = confirmed.get("bonus")
+            c_extra = confirmed.get("extra")
 
-        scores_list = g["score"].astype(int).tolist()
-        candidates = infer_candidates(scores_list)
-        top2 = choose_top_pairs(candidates, nick, common_df_all)
+            scores_list = g["score"].astype(int).tolist()
+            candidates = infer_candidates(scores_list)
+            top2 = choose_top_pairs(candidates, nick, common_df_all)
 
-        if c_battle is not None:
-            pps = int(1000 + 10 * float(c_battle))
-            b_use = int(c_bonus) if c_bonus is not None else 0
-            ex_use = int(c_extra) if c_extra is not None else 0
-        elif top2:
-            bt, bn = top2[0]
-            pps = int(1000 + 10 * float(bt))
-            b_use = int(bn)
-            ex_use = 0
-        else:
-            pps = 0
-            b_use = 0
-            ex_use = 0
+            if c_battle is not None:
+                pps = int(1000 + 10 * float(c_battle))
+                b_use = int(c_bonus) if c_bonus is not None else 0
+                ex_use = int(c_extra) if c_extra is not None else 0
+            elif top2:
+                bt, bn = top2[0]
+                pps = int(1000 + 10 * float(bt))
+                b_use = int(bn)
+                ex_use = 0
+            else:
+                pps = 0
+                b_use = 0
+                ex_use = 0
 
-        def max_points(extra: int) -> int:
-            return int(pps) * int(BASE_SECONDS + extra) + 10 * int(b_use)
+            def max_points(extra: int) -> int:
+                return int(pps) * int(BASE_SECONDS + extra) + 10 * int(b_use)
 
-        max_score = max_points(ex_use) if pps > 0 else 0
-        if pps > 0 and c_battle is None:
-            if max_score < total:
-                for ex_try in [20, 60, 120]:
-                    if max_points(ex_try) >= total:
-                        ex_use = ex_try
-                        max_score = max_points(ex_use)
-                        break
+            max_score = max_points(ex_use) if pps > 0 else 0
+            if pps > 0 and c_battle is None:
+                if max_score < total:
+                    for ex_try in [20, 60, 120]:
+                        if max_points(ex_try) >= total:
+                            ex_use = ex_try
+                            max_score = max_points(ex_use)
+                            break
 
-        inferred[nick] = {
-            "pps": pps,
-            "bonus": b_use,
-            "extra": ex_use,
-            "pairs": top2,
-            "valid": pps > 0,
-            "total": total,
-        }
+            inferred[nick] = {
+                "pps": pps,
+                "bonus": b_use,
+                "extra": ex_use,
+                "pairs": top2,
+                "valid": pps > 0,
+                "total": total,
+            }
 
-        rows.append(
-            {
-                "닉네임": nick,
-                "공격횟수": attacks,
-                "총점": total,
-                "평균점수": avg,
-                "확정 격전지점수": (
-                    int(c_battle)
-                    if c_battle is not None and float(c_battle).is_integer()
-                    else (c_battle if c_battle is not None else "-")
-                ),
-                "확정 추가점수": (int(c_bonus) if c_bonus is not None else "-"),
-                "확정 1초당 점수": (
-                    int(1000 + 10 * float(c_battle)) if c_battle is not None else "-"
-                ),
-                "확정 추가 초": (
-                    int(c_extra)
-                    if c_extra is not None
-                    else (ex_use if c_battle is None and pps > 0 else "-")
-                ),
-                "최대획득점수": (max_score if pps > 0 else "-"),
-                "추정 격전지/추가점수": (
+            rows.append(
+                {
+                    "닉네임": nick,
+                    "공격횟수": attacks,
+                    "총점": total,
+                    "평균점수": avg,
+                    "확정 격전지점수": (
+                        int(c_battle)
+                        if c_battle is not None and float(c_battle).is_integer()
+                        else (c_battle if c_battle is not None else "-")
+                    ),
+                    "확정 추가점수": (int(c_bonus) if c_bonus is not None else "-"),
+                    "확정 1초당 점수": (
+                        int(1000 + 10 * float(c_battle))
+                        if c_battle is not None
+                        else "-"
+                    ),
+                    "확정 추가 초": (
+                        int(c_extra)
+                        if c_extra is not None
+                        else (ex_use if c_battle is None and pps > 0 else "-")
+                    ),
+                    "최대획득점수": (max_score if pps > 0 else "-"),
+                    "추정 격전지/추가점수": (
+                        ", ".join(
+                            [
+                                f"{int(bt) if float(bt).is_integer() else bt}/{bn}"
+                                for bt, bn in top2
+                            ]
+                        )
+                        if top2
+                        else ("추정불가" if c_battle is None else "-")
+                    ),
+                }
+            )
+
+        out_df = pd.DataFrame(rows)
+    else:
+        # 여러 날짜 모드: 날짜별 비교 테이블 생성
+        compare_rows: List[Dict[str, object]] = []
+        dates_all = [str(d).replace('-', '').replace('.', '') for d in sel_dates]
+        for nick in nicknames:
+            row = {"닉네임": nick}
+            for d in dates_all:
+                g2 = filtered[
+                    (filtered["nick_norm"].astype(str) == str(nick))
+                    & (filtered["date_norm"] == d)
+                ]
+                if g2.empty:
+                    row[d] = "-"
+                    continue
+                key = (str(nick).strip(), str(d))
+                cb = common_by_key.get(key, {}).get("battle")
+                bo = common_by_key.get(key, {}).get("bonus")
+                if cb is not None:
+                    val_b = int(cb) if float(cb).is_integer() else float(cb)
+                    val_o = int(bo) if bo is not None else 0
+                    row[d] = f"{val_b}/{val_o}"
+                    continue
+                scores2 = g2["score"].astype(int).tolist()
+                cand2 = infer_candidates(scores2)
+                top2d = choose_top_pairs(cand2, nick, common_df_all)
+                row[d] = (
                     ", ".join(
                         [
                             f"{int(bt) if float(bt).is_integer() else bt}/{bn}"
-                            for bt, bn in top2
+                            for bt, bn in top2d
                         ]
                     )
-                    if top2
-                    else ("추정불가" if c_battle is None else "-")
-                ),
-            }
-        )
+                    if top2d
+                    else "추정불가"
+                )
+            compare_rows.append(row)
+        compare_df = pd.DataFrame(compare_rows)
+    if mode == "단일 날짜":
+        # 숫자형으로 해석 가능한 열은 숫자 타입으로 변환하여 Streamlit에서 숫자 기준 정렬이 되도록 함
+        numeric_cols = [
+            "공격횟수",
+            "총점",
+            "평균점수",
+            "확정 격전지점수",
+            "확정 추가점수",
+            "확정 1초당 점수",
+            "확정 추가 초",
+            "최대획득점수",
+        ]
+        if 'out_df' in locals():
+            for col in numeric_cols:
+                if col in out_df.columns:
+                    out_df[col] = pd.to_numeric(out_df[col], errors="coerce")
+            # 총점 기준 내림차순 정렬 (순위 컬럼은 표시하지 않음)
+            if "총점" in out_df.columns:
+                out_df = out_df.sort_values("총점", ascending=False).reset_index(
+                    drop=True
+                )
 
-    out_df = pd.DataFrame(rows)
-    # 숫자형으로 해석 가능한 열은 숫자 타입으로 변환하여 Streamlit에서 숫자 기준 정렬이 되도록 함
-    numeric_cols = [
-        "공격횟수",
-        "총점",
-        "평균점수",
-        "확정 격전지점수",
-        "확정 추가점수",
-        "확정 1초당 점수",
-        "확정 추가 초",
-        "최대획득점수",
-    ]
-    for col in numeric_cols:
-        if col in out_df.columns:
-            out_df[col] = pd.to_numeric(out_df[col], errors="coerce")
+            st.dataframe(out_df, use_container_width=True)
 
-    st.dataframe(out_df, use_container_width=True)
-
-    if sel_date != "전체":
+        # 길드 합계 및 닉네임별 남은 가능치 표시 (단일 날짜 모드에만 유효)
         st.divider()
         st.subheader("길드 합계")
         included = [n for n, info in inferred.items() if info.get("valid")]
         excluded = [n for n in inferred.keys() if n not in included]
         guild_total = int(filtered["score"].sum())
         included_total = int(
-            filtered[filtered["nickname"].isin(included)]["score"].sum()
+            filtered[filtered["nick_norm"].isin(included)]["score"].sum()
         )
         excluded_total = int(
-            filtered[~filtered["nickname"].isin(included)]["score"].sum()
+            filtered[~filtered["nick_norm"].isin(included)]["score"].sum()
         )
         guild_est_max = 0
         for n in included:
@@ -453,7 +582,7 @@ with tab1:
             total_i = int(info.get("total", 0))
             max_i = pps_i * (BASE_SECONDS + ex_i) + 10 * bn_i
             remain_score = max(0, max_i - total_i)
-            g_nick = filtered[filtered["nickname"].astype(str) == str(n)]
+            g_nick = filtered[filtered["nick_norm"].astype(str) == str(n)]
             used_attacks_with_time = int(
                 (g_nick["score"].astype(int) != int(bn_i)).sum()
             )
@@ -488,47 +617,11 @@ with tab1:
             remain_df.sort_values(["남은획득점수"], ascending=False),
             use_container_width=True,
         )
-
-    if sel_date == "전체":
-        st.divider()
-        st.subheader("닉네임별 날짜 비교: 확정/추정 격전지/추가점수")
-        dates_all = sorted(filtered["date"].unique())
-        compare_rows: List[Dict[str, object]] = []
-        for nick in nicknames:
-            row = {"닉네임": nick}
-            for d in dates_all:
-                g2 = filtered[
-                    (filtered["nickname"].astype(str) == str(nick))
-                    & (filtered["date"] == d)
-                ]
-                if g2.empty:
-                    row[d] = "-"
-                    continue
-                key = (nick, str(d))
-                cb = common_by_key.get(key, {}).get("battle")
-                bo = common_by_key.get(key, {}).get("bonus")
-                if cb is not None:
-                    val_b = int(cb) if float(cb).is_integer() else float(cb)
-                    val_o = int(bo) if bo is not None else 0
-                    row[d] = f"{val_b}/{val_o}"
-                    continue
-                scores2 = g2["score"].astype(int).tolist()
-                cand2 = infer_candidates(scores2)
-                top2d = choose_top_pairs(cand2, nick, common_df_all)
-                row[d] = (
-                    ", ".join(
-                        [
-                            f"{int(bt) if float(bt).is_integer() else bt}/{bn}"
-                            for bt, bn in top2d
-                        ]
-                    )
-                    if top2d
-                    else "추정불가"
-                )
-            compare_rows.append(row)
-        compare_df = pd.DataFrame(compare_rows)
-        # 비교표는 날짜별로 문자열(예: "100/0", "추정불가")을 포함하므로 기본 생성 후 표시
-        st.dataframe(compare_df, use_container_width=True)
+    else:
+        # 여러 날짜 모드: 비교 테이블 출력
+        if 'compare_df' in locals():
+            st.divider()
+            st.dataframe(compare_df, use_container_width=True)
 
 
 with tab2:
@@ -554,10 +647,114 @@ with tab2:
     fig.update_layout(yaxis={"categoryorder": "total ascending"})
     st.plotly_chart(fig, use_container_width=True)
 
+    # 미참여 통계도 동일 탭에 포함
+    st.divider()
+    st.subheader("보스별 미참여 현황 및 요약")
+    roster = []
+    # 참가자 명단은 common 파일(확정자)에서 가져오고, 없으면 all_df에서 추출
+    if not common_df_all.empty:
+        roster = sorted(common_df_all["nick_norm"].dropna().astype(str).unique())
+    else:
+        roster = sorted(all_df["nick_norm"].dropna().astype(str).unique())
+
+    if not sel_dates:
+        st.info("선택된 날짜가 없습니다.")
+    else:
+        if mode == "단일 날짜":
+            d = str(sel_dates[0]).replace('-', '').replace('.', '')
+            df_d = all_df[all_df["date_norm"] == d]
+            # normal 보스는 미참여 집계에서 제외
+            boss_orders = sorted(
+                df_d[df_d["boss_order"].astype(str).str.lower() != "normal"][
+                    "boss_order"
+                ]
+                .astype(str)
+                .unique()
+            )
+            missing_by_boss = {}
+            for boss in boss_orders:
+                participants = set(
+                    df_d[df_d["boss_order"].astype(str) == str(boss)]["nick_norm"]
+                    .astype(str)
+                    .unique()
+                )
+                missing = [n for n in roster if n not in participants]
+                missing_by_boss[boss] = missing
+            # 전체 보스를 한눈에 볼 수 있는 요약 테이블로 표시
+            miss_summary_rows = []
+            for boss, miss in missing_by_boss.items():
+                miss_summary_rows.append(
+                    {
+                        "보스": boss,
+                        "미참여수": len(miss),
+                        "미참여자": ", ".join(miss) if miss else "-",
+                    }
+                )
+            miss_summary_df = pd.DataFrame(miss_summary_rows).sort_values("보스")
+            st.dataframe(miss_summary_df, use_container_width=True)
+            miss_count = {n: 0 for n in roster}
+            for boss in boss_orders:
+                participants = set(
+                    df_d[df_d["boss_order"].astype(str) == str(boss)]["nick_norm"]
+                    .astype(str)
+                    .unique()
+                )
+                for n in roster:
+                    if n not in participants:
+                        miss_count[n] += 1
+            groups = {}
+            for n, c in miss_count.items():
+                groups.setdefault(c, []).append(n)
+            st.divider()
+            st.subheader(f"{d} - 닉네임별 미참여 횟수")
+            for c in sorted(groups.keys()):
+                st.markdown(
+                    f"**{c}회 미참**: {', '.join(groups[c]) if groups[c] else '-'}"
+                )
+        else:
+            selected = [str(x).replace('-', '').replace('.', '') for x in sel_dates]
+            df_sel = all_df[all_df["date_norm"].isin(selected)]
+            # normal 제외
+            boss_orders = sorted(
+                df_sel[df_sel["boss_order"].astype(str).str.lower() != "normal"][
+                    "boss_order"
+                ]
+                .astype(str)
+                .unique()
+            )
+            miss_count = {n: 0 for n in roster}
+            for d in selected:
+                df_d = df_sel[df_sel["date_norm"] == d]
+                for boss in (
+                    df_d[df_d["boss_order"].astype(str).str.lower() != "normal"][
+                        "boss_order"
+                    ]
+                    .astype(str)
+                    .unique()
+                ):
+                    participants = set(
+                        df_d[df_d["boss_order"].astype(str) == str(boss)]["nick_norm"]
+                        .astype(str)
+                        .unique()
+                    )
+                    for n in roster:
+                        if n not in participants:
+                            miss_count[n] += 1
+            miss_rows = [
+                {"닉네임": n, "미참여횟수": c} for n, c in miss_count.items() if c > 0
+            ]
+            miss_df = pd.DataFrame(miss_rows).sort_values("미참여횟수", ascending=False)
+            st.dataframe(miss_df, use_container_width=True)
+
 
 with tab3:
     st.subheader("원본 데이터 (보스별 분리)")
     sort_cols = [c for c in ["date", "boss_order", "rank"] if c in filtered.columns]
+    # 디버그: 현재 필터된 데이터에서 보스 목록 및 개수 표시 (문제 조사용)
+    boss_vals = filtered["boss_order"].astype(str).str.strip()
+    boss_counts = boss_vals.value_counts().to_dict()
+    st.markdown("**탐지된 보스 목록 및 행 개수**")
+    st.write(boss_counts)
     grouped = filtered.sort_values(sort_cols).groupby("boss_order")
     for boss_order, g in grouped:
         title = f"보스 {boss_order}번 데이터"
