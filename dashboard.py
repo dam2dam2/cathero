@@ -546,7 +546,8 @@ with tab1:
             if pps_i <= 0:
                 continue
             guild_est_max += pps_i * (BASE_SECONDS + ex_i) + 10 * bn_i
-        guild_remaining = max(0, guild_est_max - included_total)
+        # 총점이 최대획득점수보다 클 경우 초과분을 음수로 표시하도록 변경
+        guild_remaining = guild_est_max - included_total
         c1, c2 = st.columns(2)
         with c1:
             st.metric("길드 총점", f"{guild_total:,}")
@@ -581,34 +582,60 @@ with tab1:
             ex_i = int(info.get("extra", 0))
             total_i = int(info.get("total", 0))
             max_i = pps_i * (BASE_SECONDS + ex_i) + 10 * bn_i
-            remain_score = max(0, max_i - total_i)
+            # 닉네임별 잔여점수: 최대획득점수 - 현재총점 (초과 시 음수)
+            remain_score = max_i - total_i
             g_nick = filtered[filtered["nick_norm"].astype(str) == str(n)]
-            used_attacks_with_time = int(
-                (g_nick["score"].astype(int) != int(bn_i)).sum()
-            )
-            battle_val = (pps_i - 1000) / 10.0
-            time_used = used_attacks_with_time * battle_val
+
+            # 실제 사용 시간 계산: (score - bonus) / pps (추가점수만 있는 공격은 시간 계산에서 제외)
+            used_time_seconds = 0.0
+            time_entries: List[float] = []
+            if pps_i > 0:
+                for sc in g_nick["score"].astype(int).tolist():
+                    if sc == bn_i:
+                        continue
+                    sec = (sc - bn_i) / float(pps_i)
+                    if sec <= 0:
+                        continue
+                    used_time_seconds += sec
+                    time_entries.append(sec)
+
             total_time = BASE_SECONDS + ex_i
-            time_left = max(0, total_time - time_used)
-            remain_attacks = int(time_left // battle_val) if battle_val > 0 else 0
-            time_left_formula = (
-                max(0, (remain_score - remain_attacks * int(bn_i)) / pps_i)
+            time_left = max(0.0, total_time - used_time_seconds)
+
+            # 평균 공격 시간 사용(없으면 격전지 기반 추정)
+            if time_entries:
+                avg_sec = sum(time_entries) / len(time_entries)
+            else:
+                avg_sec = (pps_i - 1000) / 10.0 if pps_i > 1000 else 1.0
+
+            remain_attacks = int(time_left // avg_sec) if avg_sec > 0 else 0
+
+            # 남은시간(초)은 남은획득점수에서 보너스를 제외한 후 필요한 초로 계산
+            remain_time_needed = (
+                (remain_score - remain_attacks * bn_i) / float(pps_i)
                 if pps_i > 0
                 else 0
             )
+            remain_time_needed = int(max(0, round(remain_time_needed)))
+
+            battle_val = (pps_i - 1000) / 10.0
             remain_rows.append(
                 {
                     "닉네임": n,
                     "격전지": (
-                        int(battle_val)
-                        if float(battle_val).is_integer()
-                        else float(battle_val)
+                        (
+                            int(battle_val)
+                            if float(battle_val).is_integer()
+                            else float(battle_val)
+                        )
+                        if pps_i > 0
+                        else "-"
                     ),
                     "pps": pps_i,
                     "추가점수": bn_i,
                     "추가초": ex_i,
                     "남은공격횟수": remain_attacks,
-                    "남은시간(초)": int(round(time_left_formula)),
+                    "남은시간(초)": remain_time_needed,
                     "남은획득점수": int(remain_score),
                 }
             )
@@ -650,12 +677,14 @@ with tab2:
     # 미참여 통계도 동일 탭에 포함
     st.divider()
     st.subheader("보스별 미참여 현황 및 요약")
-    roster = []
-    # 참가자 명단은 common 파일(확정자)에서 가져오고, 없으면 all_df에서 추출
-    if not common_df_all.empty:
-        roster = sorted(common_df_all["nick_norm"].dropna().astype(str).unique())
-    else:
-        roster = sorted(all_df["nick_norm"].dropna().astype(str).unique())
+    # 로스터 생성: common 우선이지만 common에 없는 관측 닉네임도 포함
+    common_nicks = (
+        set(common_df_all["nick_norm"].dropna().astype(str).unique())
+        if not common_df_all.empty
+        else set()
+    )
+    observed_nicks = set(all_df["nick_norm"].dropna().astype(str).unique())
+    roster = sorted(common_nicks | observed_nicks)
 
     if not sel_dates:
         st.info("선택된 날짜가 없습니다.")
