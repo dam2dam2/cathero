@@ -195,55 +195,59 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
     boss_scores = [s for s in scores if s.get("type") == "boss"]
     if not boss_scores: return []
 
-    # 5의 배수인 점수들을 우선적으로 기준점으로 사용 (Reliable scores)
-    reliable_scores = [s for s in boss_scores if s.get("score", 0) % 5 == 0]
-    # Reliable scores가 없으면 전체 boss_scores 사용
-    reference_pool = reliable_scores if reliable_scores else boss_scores
-    # 최신 순으로 정렬
-    sorted_refs = sorted(reference_pool, key=lambda x: str(x.get("updateTime", "")), reverse=True)
+    # 1단계: 5의 배수인 점수들(신뢰 점수) 추출 및 유니크 값 정렬
+    reliable_vals = sorted(list(set(s.get("score", 0) for s in boss_scores if s.get("score", 0) % 5 == 0)), reverse=True)
     
     candidates = []
-    
-    # 여러 기준점에 대해 순차적으로 시도
-    for ref_item in sorted_refs:
-        ref_score = ref_item["score"]
-        
+
+    # 2단계: 신뢰 점수 간의 차이를 이용한 b_val 선추출 (가장 강력한 조건)
+    if len(reliable_vals) >= 2:
         for b_val in [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]:
             wave_p = 1000 + b_val * 10
-            for bonus in BONUS_CANDIDATES:
-                # 기준점수가 보너스 점수와 일치하는 경우 (0초 공격 등)
-                if ref_score == bonus:
-                    # 모든 다른 점수들이 이 조합(wave_p, bonus)과 일치해야 함
-                    all_valid = True
-                    for other in boss_scores:
-                        s = other["score"]
-                        if s == bonus: continue
-                        if s < bonus or (s - bonus) % wave_p != 0:
-                            all_valid = False; break
-                    if all_valid:
-                        if (b_val, int(bonus)) not in candidates:
-                            candidates.append((b_val, int(bonus)))
-                
-                # 기준점수가 보너스보다 높은 경우
-                elif ref_score > bonus and (ref_score - bonus) % wave_p == 0:
-                    # 모든 다른 점수들이 이 조합과 일치하는지 확인
-                    all_valid = True
-                    for other in boss_scores:
-                        s = other["score"]
-                        if s == bonus: continue
-                        # 점수 차이가 wave_p의 배수여야 함
-                        if abs(s - ref_score) % wave_p != 0:
-                            all_valid = False; break
-                        # 보너스 차감 후에도 배수여야 함
-                        if s < bonus or (s - bonus) % wave_p != 0:
-                            all_valid = False; break
-                    
-                    if all_valid:
-                        if (b_val, int(bonus)) not in candidates:
-                            candidates.append((b_val, int(bonus)))
+            # 모든 신뢰 점수 간의 차이가 wave_p의 배수인지 확인
+            is_consistent = True
+            for i in range(len(reliable_vals) - 1):
+                diff = reliable_vals[i] - reliable_vals[i+1]
+                if diff % wave_p != 0:
+                    is_consistent = False; break
+            
+            if is_consistent:
+                # 이 b_val에 맞는 bonus 탐색
+                for bonus in BONUS_CANDIDATES:
+                    if (reliable_vals[0] - bonus) % wave_p == 0:
+                        # 전체 boss_scores와 일치하는지 최종 검증
+                        all_match = True
+                        for s_item in boss_scores:
+                            s = s_item["score"]
+                            if s == bonus: continue
+                            if s < bonus or (s - bonus) % wave_p != 0:
+                                all_match = False; break
+                        
+                        if all_match:
+                            if (b_val, int(bonus)) not in candidates:
+                                candidates.append((b_val, int(bonus)))
 
-            if len(candidates) >= 5: break
-        if candidates: break # 이미 후보를 찾았다면 중단 (최신 기준점 우선)
+    # 3단계: 2단계에서 실패했거나 신뢰 점수가 부족한 경우, 기존 방식(단일 기준점)으로 보완
+    if not candidates:
+        # 최신 순으로 정렬된 전체 보스 점수 사용
+        sorted_all = sorted(boss_scores, key=lambda x: str(x.get("updateTime", "")), reverse=True)
+        for ref_item in sorted_all:
+            ref_score = ref_item["score"]
+            for b_val in [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]:
+                wave_p = 1000 + b_val * 10
+                for bonus in BONUS_CANDIDATES:
+                    if ref_score >= bonus and (ref_score - bonus) % wave_p == 0:
+                        all_match = True
+                        for other in boss_scores:
+                            s = other["score"]
+                            if s == bonus: continue
+                            if s < bonus or (s - bonus) % wave_p != 0:
+                                all_match = False; break
+                        if all_match:
+                            if (b_val, int(bonus)) not in candidates:
+                                candidates.append((b_val, int(bonus)))
+                if len(candidates) >= 3: break
+            if candidates: break
 
     return candidates[:2]
 
