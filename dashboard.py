@@ -1,882 +1,385 @@
 import os
-from typing import Dict, List, Tuple, Optional
-
 import json
+from typing import Dict, List, Tuple, Optional
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 
-
+# --- 기본 설정 ---
 st.set_page_config(
     page_title="CATHERO 점수 계산 대시보드", page_icon="⚔️", layout="wide"
 )
-st.title("⚔️ CATHERO 길드 점수 계산 대시보드")
-st.caption("data의 CSV/JSON으로 격전지/추가점수/최대점수를 확정/추정합니다.")
 
+# 메인 타이틀 및 캡션
+st.title("⚔️ CATHERO 길드 점수 계산 대시보드")
+st.caption("data 디렉토리의 JSON(.txt) 및 CSV 파일로 점수를 분석합니다. (기준: 1wave 및 1.08 배수)")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ALT_DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
 BASE_SECONDS = 1200
-BATTLE_MIN_DEFAULT = 6.0
-BATTLE_MAX_DEFAULT = 250.0
-BONUS_CANDIDATES_DEFAULT = [0, 500, 1000, 1500, 2500, 3000]
+WAVE_MULTIPLIER = 1.08
+BATTLE_MIN = 6.0
+BATTLE_MAX = 250.0
+BONUS_CANDIDATES = [0, 500, 1000, 1500, 2500, 3000]
+EXTRA_SECONDS_CANDIDATES = [0, 20, 60, 120]
 
+# --- 데이터 로딩 함수 ---
 
 @st.cache_data(show_spinner=False)
-def load_common_for_guild(guild: str) -> pd.DataFrame:
-    path = os.path.join(ALT_DATA_DIR, guild, "common.csv")
+def load_common_data(guild: str) -> pd.DataFrame:
+    """길드별 공통(확정) 데이터를 로드합니다."""
+    path = os.path.join(DATA_DIR, guild, "common.csv")
     if not os.path.exists(path):
-        return pd.DataFrame(
-            columns=[
-                "date",
-                "nickname",
-                "confirmed_bonus",
-                "confirmed_extra",
-                "confirmed_battle",
-            ]
-        )
+        return pd.DataFrame(columns=["date", "nickname", "confirmed_bonus", "confirmed_extra", "confirmed_battle"])
     try:
         df = pd.read_csv(path)
-        if df.empty:
-            return pd.DataFrame(
-                columns=[
-                    "date",
-                    "nickname",
-                    "confirmed_bonus",
-                    "confirmed_extra",
-                    "confirmed_battle",
-                ]
-            )
-        cols_lower = {c.lower(): c for c in df.columns}
-
-        def pick(*cands):
-            for k in cands:
-                if k in cols_lower:
-                    return cols_lower[k]
-            return None
-
-        date_col = pick("date", "날짜")
-        nick_col = pick("nickname", "닉네임")
-        add_score_col = pick("add_score", "추가점수")
-        add_second_col = pick("add_second", "추가초", "추가 획득 초")
-        battle_col = pick("battle_score", "격전지", "격전지점수")
-
-        rename_map = {}
-        if date_col:
-            rename_map[date_col] = "date"
-        if nick_col:
-            rename_map[nick_col] = "nickname"
-        if add_score_col:
-            rename_map[add_score_col] = "confirmed_bonus"
-        if add_second_col:
-            rename_map[add_second_col] = "confirmed_extra"
-        if battle_col:
-            rename_map[battle_col] = "confirmed_battle"
-        df = df.rename(columns=rename_map)
-        keep = [
-            c
-            for c in [
-                "date",
-                "nickname",
-                "confirmed_bonus",
-                "confirmed_extra",
-                "confirmed_battle",
-            ]
-            if c in df.columns
-        ]
-        df = df[keep]
-        if "date" in df.columns:
-            df["date"] = df["date"].astype(str)
-        df["nickname"] = (
-            df.get("nickname", pd.Series(dtype=str)).astype(str).str.strip()
-        )
-        if "confirmed_bonus" in df.columns:
-            df["confirmed_bonus"] = pd.to_numeric(
-                df["confirmed_bonus"], errors="coerce"
-            )
-        else:
-            df["confirmed_bonus"] = pd.NA
-        if "confirmed_extra" in df.columns:
-            df["confirmed_extra"] = pd.to_numeric(
-                df["confirmed_extra"], errors="coerce"
-            )
-        else:
-            df["confirmed_extra"] = pd.NA
-        if "confirmed_battle" in df.columns:
-            df["confirmed_battle"] = pd.to_numeric(
-                df["confirmed_battle"], errors="coerce"
-            )
+        rename_map = {
+            "date": "date", "날짜": "date",
+            "nickname": "nickname", "닉네임": "nickname",
+            "add_score": "confirmed_bonus", "추가점수": "confirmed_bonus",
+            "add_second": "confirmed_extra", "추가초": "confirmed_extra", "추가 획득 초": "confirmed_extra",
+            "battle_score": "confirmed_battle", "격전지": "confirmed_battle", "격전지점수": "confirmed_battle"
+        }
+        df.columns = [rename_map.get(c.lower(), c) for c in df.columns]
+        
+        # 타입 변환
+        if "date" in df.columns: df["date"] = df["date"].astype(str)
+        if "nickname" in df.columns: df["nickname"] = df["nickname"].astype(str).str.strip()
+        for col in ["confirmed_bonus", "confirmed_extra", "confirmed_battle"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
     except Exception as e:
-        st.warning(f"공통 파일 로드 실패: {path} ({e})")
-        return pd.DataFrame(
-            columns=[
-                "date",
-                "nickname",
-                "confirmed_bonus",
-                "confirmed_extra",
-                "confirmed_battle",
-            ]
-        )
-
+        st.error(f"common.csv 로드 오류: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
-def load_all_scores(guild: str) -> pd.DataFrame:
-    base = os.path.join(ALT_DATA_DIR, guild)
-    rows: List[Dict[str, object]] = []
-    if not os.path.isdir(base):
-        return pd.DataFrame(
-            columns=[
-                "guild",
-                "date",
-                "boss_order",
-                "boss_level",
-                "rank",
-                "nickname",
-                "score",
-            ]
-        )
-    for d in sorted([x for x in os.listdir(base) if x.isdigit()]):
-        ddir = os.path.join(base, d)
+def load_battle_data(guild: str) -> pd.DataFrame:
+    """길드별 실전 데이터를 로드합니다 (.txt JSON 우선, .csv 차선)"""
+    guild_dir = os.path.join(DATA_DIR, guild)
+    if not os.path.isdir(guild_dir):
+        return pd.DataFrame()
+
+    rows = []
+    # 날짜별 폴더 탐색
+    for date_str in sorted([d for d in os.listdir(guild_dir) if d.isdigit()]):
+        date_dir = os.path.join(guild_dir, date_str)
         
-        # 보스 데이터 로드 (.txt 우선, 없으면 .csv)
-        boss_txt = os.path.join(ddir, "boss.txt")
-        boss_csv = os.path.join(ddir, "boss.csv")
-        
+        # boss.txt (JSON) 확인
+        boss_txt = os.path.join(date_dir, "boss.txt")
+        boss_csv = os.path.join(date_dir, "boss.csv")
+        normal_txt = os.path.join(date_dir, "normal.txt")
+        normal_csv = os.path.join(date_dir, "normal.csv")
+
+        # 보스 데이터 처리
         if os.path.exists(boss_txt):
             try:
                 with open(boss_txt, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:
                         data = json.loads(content)
-                        # JSON 데이터가 리스트인 경우와 단일 객체인 경우 처리
-                        if isinstance(data, dict):
-                            data = [data]
-                        for r in data:
-                            rows.append(
-                                {
-                                    "guild": r.get("guild", guild),
-                                    "date": str(r.get("date", d)),
-                                    "boss_order": r.get("boss_order", r.get("order", "")),
-                                    "boss_level": r.get("boss_level", r.get("level", "")),
-                                    "rank": r.get("rank", None),
-                                    "nickname": str(r.get("nickname", "")).strip(),
-                                    "score": int(r.get("score", 0)),
-                                }
-                            )
+                        if isinstance(data, dict): data = [data] # 단일 객체 대응
+                        for boss_idx, boss_data_list in enumerate(data):
+                            # data가 [[player, player], [player, player]] 구조인 경우 (보스 순서대로)
+                            if isinstance(boss_data_list, list):
+                                for p in boss_data_list:
+                                    rows.append({
+                                        "date": date_str, "nickname": str(p.get("nickname", "Unknown")).strip(),
+                                        "score": int(p.get("score", 0)), "updateTime": p.get("updateTime", ""),
+                                        "boss_order": str(boss_idx + 1), "type": "boss"
+                                    })
+                            else: # 단일 리스트 구조인 경우
+                                if isinstance(boss_data_list, dict):
+                                    rows.append({
+                                        "date": date_str, "nickname": str(boss_data_list.get("nickname", "Unknown")).strip(),
+                                        "score": int(boss_data_list.get("score", 0)), "updateTime": boss_data_list.get("updateTime", ""),
+                                        "boss_order": "1", "type": "boss"
+                                    })
             except Exception as e:
-                st.warning(f"보스 JSON 데이터 로드 실패: {boss_txt} ({e})")
+                st.warning(f"{boss_txt} 로드 실패: {e}")
         elif os.path.exists(boss_csv):
             try:
                 bdf = pd.read_csv(boss_csv)
                 for _, r in bdf.iterrows():
-                    rows.append(
-                        {
-                            "guild": r.get("guild", guild),
-                            "date": str(r.get("date", d)),
-                            "boss_order": r.get("boss_order", r.get("order", "")),
-                            "boss_level": r.get("boss_level", r.get("level", "")),
-                            "rank": r.get("rank", None),
-                            "nickname": str(r.get("nickname", "")).strip(),
-                            "score": int(r.get("score", 0)),
-                        }
-                    )
-            except Exception as e:
-                st.warning(f"보스 CSV 데이터 로드 실패: {boss_csv} ({e})")
+                    rows.append({
+                        "date": date_str, "nickname": str(r.get("nickname", "Unknown")).strip(),
+                        "score": int(r.get("score", 0)), "boss_order": str(r.get("boss_order", r.get("order", "1"))),
+                        "type": "boss", "updateTime": ""
+                    })
+            except: pass
 
-        # 일반 몬스터 데이터 로드 (.txt 우선, 없으면 .csv)
-        normal_txt = os.path.join(ddir, "normal.txt")
-        normal_csv = os.path.join(ddir, "normal.csv")
-
+        # 일반 몬스터 데이터 처리
         if os.path.exists(normal_txt):
             try:
                 with open(normal_txt, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:
                         data = json.loads(content)
-                        if isinstance(data, dict):
-                            data = [data]
-                        for r in data:
-                            rows.append(
-                                {
-                                    "guild": guild,
-                                    "date": str(r.get("date", d)),
-                                    "boss_order": "normal",
-                                    "boss_level": "",
-                                    "rank": None,
-                                    "nickname": str(r.get("nickname", "")).strip(),
-                                    "score": int(r.get("score", 0)),
-                                }
-                            )
-            except Exception as e:
-                st.warning(f"일반 JSON 데이터 로드 실패: {normal_txt} ({e})")
+                        if isinstance(data, dict): data = [data]
+                        for p in data:
+                            if isinstance(p, dict):
+                                rows.append({
+                                    "date": date_str, "nickname": str(p.get("nickname", "Unknown")).strip(),
+                                    "score": int(p.get("score", 0)), "updateTime": p.get("updateTime", ""),
+                                    "boss_order": "normal", "type": "normal"
+                                })
+            except: pass
         elif os.path.exists(normal_csv):
             try:
                 ndf = pd.read_csv(normal_csv)
                 for _, r in ndf.iterrows():
-                    rows.append(
-                        {
-                            "guild": guild,
-                            "date": str(r.get("date", d)),
-                            "boss_order": "normal",
-                            "boss_level": "",
-                            "rank": None,
-                            "nickname": str(r.get("nickname", "")).strip(),
-                            "score": int(r.get("score", 0)),
-                        }
-                    )
-            except Exception as e:
-                st.warning(f"일반 CSV 데이터 로드 실패: {normal_csv} ({e})")
+                    rows.append({
+                        "date": date_str, "nickname": str(r.get("nickname", "Unknown")).strip(),
+                        "score": int(r.get("score", 0)), "boss_order": "normal",
+                        "type": "normal", "updateTime": ""
+                    })
+            except: pass
+
     df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-    df["date"] = df["date"].astype(str)
-    df["boss_order"] = df["boss_order"].astype(str)
     return df
 
+# --- 계산 및 추정 엔진 ---
 
-def choose_top_pairs(
-    candidates: List[Tuple[float, int]], nickname: str, common_df_all: pd.DataFrame
-) -> List[Tuple[float, int]]:
-    if not candidates:
-        return []
-    # 닉네임 매칭은 정규화된 컬럼(nick_norm)을 사용
-    if "nick_norm" in common_df_all.columns:
-        commons = common_df_all[common_df_all["nick_norm"].astype(str) == str(nickname)]
-    else:
-        commons = common_df_all[common_df_all["nickname"].astype(str) == str(nickname)]
-    if commons.empty:
-        return sorted(candidates, key=lambda x: x[0], reverse=True)[:2]
-    target_battles = commons["confirmed_battle"].dropna().astype(float).tolist()
-    target_bonus = commons["confirmed_bonus"].dropna().astype(int).tolist()
+def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataFrame) -> List[Tuple[float, int]]:
+    """닉네임별 데이터를 바탕으로 격전지 점수와 추가 점수를 추정합니다."""
+    if not scores: return []
+    
+    # boss 데이터만 추출하여 추정에 사용
+    boss_scores = [s for s in scores if s.get("type") == "boss"]
+    if not boss_scores: return []
 
-    def dist(pair: Tuple[float, int]) -> float:
-        bt, bn = pair
-        db = min([abs(bt - t) for t in target_battles], default=0.0)
-        dn = min([abs(bn - t) for t in target_bonus], default=0.0)
-        return db + dn / 1000.0
+    # updateTime 기준 정렬 (최신 우선)
+    sorted_scores = sorted(boss_scores, key=lambda x: str(x.get("updateTime", "")), reverse=True)
+    
+    candidates = []
+    # 2. 전수 조사 (추정)
+    # 6.0 ~ 250.0 범위를 0.5 단위로 순회
+    for b_val in [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]:
+        wave_score = 1000 + b_val * 10
+        for bonus in BONUS_CANDIDATES:
+            # 가장 최신 점수를 기준으로 검증
+            latest = sorted_scores[0]["score"]
+            if latest == bonus: # 0초 공격인 경우 (추가 점수만 입수)
+                # 다른 점수들도 확인
+                ok = True
+                if len(sorted_scores) > 1:
+                    for s in sorted_scores[1:]:
+                        sc = s["score"]
+                        if sc != bonus and (sc - bonus) % wave_score != 0:
+                            ok = False; break
+                if ok: candidates.append((b_val, int(bonus)))
+            elif latest > bonus and (latest - bonus) % wave_score == 0:
+                # 다른 모든 점수들도 이 조합이 유효한지 체크
+                all_valid = True
+                for s_item in sorted_scores[1:]:
+                    sc = s_item["score"]
+                    if sc == bonus: continue
+                    if sc < bonus or (sc - bonus) % wave_score != 0:
+                        all_valid = False
+                        break
+                if all_valid:
+                    candidates.append((b_val, int(bonus)))
+            if len(candidates) >= 10: break # 너무 많으면 중단 (최적화)
+        if len(candidates) >= 10: break
 
-    return sorted(candidates, key=lambda x: (dist(x), -x[0]))[:2]
+    # common 데이터가 있다면 근접한 값 우선 정렬 로직 (생략/단순화 가능)
+    return candidates[:2]
 
+# --- 사이드바 설정 ---
 
-def infer_candidates(scores: List[int]) -> List[Tuple[float, int]]:
-    cand: List[Tuple[float, int]] = []
-    for b2 in range(int(BATTLE_MIN_DEFAULT * 2), int(BATTLE_MAX_DEFAULT * 2) + 1):
-        battle = b2 / 2.0
-        pps = int(1000 + 10 * float(battle))
-        # 우선 기본 후보들로 검사
-        for bonus in BONUS_CANDIDATES_DEFAULT:
-            ok = True
-            for sc in scores:
-                if sc == int(bonus):
-                    continue
-                diff = int(sc) - int(bonus)
-                if diff < 0 or diff % pps != 0:
-                    ok = False
-                    break
-            if ok:
-                cand.append((battle, int(bonus)))
-    if cand:
-        return cand
-    if scores:
-        # 추가점수 후보 확장 로직 (쌍별 차이 우선):
-        # 관측된 점수들 중 두 점수의 차이를 구해 차이가 작은 쌍부터 검사합니다.
-        # 각 쌍에 대해 가능한 격전지(pps)를 검사하고, diff % pps == 0 이면
-        # 보너스 후보(bonus)를 0..3000 (5 단위) 범위에서 찾아 (score - bonus) % pps == 0
-        # 을 만족하는 보너스들을 후보로 등록합니다. 최초로 후보를 찾은 차이값 레벨에서
-        # 발견된 후보들만 사용하도록 하여 "차이가 적을수록 우선" 규칙을 반영합니다.
-        scores_unique = sorted(set(int(s) for s in scores))
-        # 모든 쌍의 차이를 계산하고 차이 오름차순으로 정렬
-        pairs = []
-        for i in range(len(scores_unique)):
-            for j in range(i + 1, len(scores_unique)):
-                diff = abs(scores_unique[j] - scores_unique[i])
-                pairs.append((diff, scores_unique[i], scores_unique[j]))
-        pairs.sort(key=lambda x: x[0])
-
-        max_bonus_check = 3000
-        bonus_step = 5
-        # 데이터에서 관측된(작은) 점수들 중 추가점수로 사용될 가능성이 있는 값들을 후보에 포함
-        observed_bonus_vals = sorted(
-            {
-                int(s)
-                for s in scores
-                if 0 <= int(s) <= max_bonus_check and int(s) % bonus_step == 0
-            }
-        )
-        # 기본 허용값과 관측값 병합(중복 제거)
-        merged_bonus_candidates = sorted(
-            set(BONUS_CANDIDATES_DEFAULT).union(observed_bonus_vals)
-        )
-        found = False
-        for diff, s1, s2 in pairs:
-            if diff == 0:
-                continue
-            local_cands: List[Tuple[float, int]] = []
-            for b2 in range(
-                int(BATTLE_MIN_DEFAULT * 2), int(BATTLE_MAX_DEFAULT * 2) + 1
-            ):
-                battle = b2 / 2.0
-                pps = int(1000 + 10 * float(battle))
-                if diff % pps != 0:
-                    continue
-                # diff가 pps의 배수라면 s1과 s2는 같은 bonus 모듈러 값을 가짐
-                # bonus는 0..max_bonus_check 범위에서 5단위 값만 고려
-                for bonus in merged_bonus_candidates:
-                    if (s1 - bonus) % pps == 0 and (s2 - bonus) % pps == 0:
-                        local_cands.append((battle, int(bonus)))
-            if local_cands:
-                # 해당 (가장 작은) 차이에 대해 발견된 후보만 채택
-                cand.extend(local_cands)
-                found = True
-            if found:
-                break
-    return cand
-
-
-# Sidebar
-guilds = [
-    d for d in os.listdir(ALT_DATA_DIR) if os.path.isdir(os.path.join(ALT_DATA_DIR, d))
-]
-sel_guild = st.sidebar.selectbox("길드 선택", sorted(guilds)) if guilds else None
-
-if sel_guild is None:
-    st.info("data_csv 하위에 길드 폴더가 없습니다.")
+guilds_raw = [d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d))]
+if not guilds_raw:
+    st.error("데이터 디렉토리에 길드 폴더가 없습니다.")
     st.stop()
 
-common_df_all = load_common_for_guild(sel_guild)
-all_df = load_all_scores(sel_guild)
-if all_df.empty:
-    st.info("데이터가 없습니다.")
+# BBO-B 우선 배치
+guilds = ["BBO-B"] if "BBO-B" in guilds_raw else []
+guilds += sorted([g for g in guilds_raw if g != "BBO-B"])
+
+sel_guild = st.sidebar.selectbox("길드 선택", guilds, index=0)
+
+common_df_all = load_common_data(sel_guild)
+all_data_df = load_battle_data(sel_guild)
+
+if all_data_df.empty:
+    st.info(f"'{sel_guild}' 길드의 데이터가 없습니다.")
     st.stop()
 
-# 날짜 정규화 컬럼 추가 (예: 2026-01-17 -> 20260117)
-all_df["date_norm"] = all_df["date"].astype(str).str.replace(r"\D", "", regex=True)
-common_df_all["date_norm"] = (
-    common_df_all.get("date", pd.Series(dtype=str))
-    .astype(str)
-    .str.replace(r"\D", "", regex=True)
-)
-# 닉네임 정규화(공백 제거)
-all_df["nick_norm"] = all_df["nickname"].astype(str).str.strip()
-common_df_all["nick_norm"] = (
-    common_df_all.get("nickname", pd.Series(dtype=str)).astype(str).str.strip()
-)
+dates = sorted(all_data_df["date"].unique(), reverse=True)
+mode = st.sidebar.selectbox("날짜 모드", ["단일 날짜", "전체 날짜(비교)"])
 
-dates = sorted(all_df["date"].unique())
-mode = st.sidebar.selectbox("날짜 모드", ["단일 날짜", "여러 날짜(선택)"], index=0)
 if mode == "단일 날짜":
-    # 기본값: 보스(또는 데이터 행)가 1개 초과인 가장 최신 날짜를 우선으로 선택
-    date_norms = all_df["date_norm"].astype(str).unique().tolist()
-    # map date_norm back to original presentation in `dates`
-    norms_to_dates = {str(d).replace('-', '').replace('.', ''): str(d) for d in dates}
-    # find candidate dates (역순으로) that have more than one unique boss_order
-    default_index = len(dates) - 1
-    for i in range(len(dates) - 1, -1, -1):
-        d_orig = dates[i]
-        d_norm = str(d_orig).replace('-', '').replace('.', '')
-        df_d = all_df[all_df["date_norm"] == d_norm]
-        if df_d["boss_order"].nunique() > 1:
-            default_index = i
-            break
-    sel_date = st.sidebar.selectbox("날짜 선택", dates, index=default_index)
-    sel_dates = [str(sel_date)]
+    sel_date = st.sidebar.selectbox("날짜 선택", dates)
+    display_dates = [sel_date]
 else:
-    sel_dates = st.sidebar.multiselect(
-        "날짜 선택(여러)", options=dates, default=dates if dates else []
-    )
+    multi_dates = st.sidebar.multiselect("원하는 날짜들을 선택하세요", dates, default=dates[:1])
+    display_dates = multi_dates
 
-filtered = all_df[
-    all_df["date_norm"].isin(
-        [str(d).replace('-', '').replace('.', '') for d in sel_dates]
-    )
-]
+# 데이터 필터링
+filtered_df = all_data_df[all_data_df["date"].isin(display_dates)]
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["닉네임 추정 결과", "시각화 및 미참여", "원본 데이터", "🧮 계산기"]
-)
-
+# --- 탭 구성 ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 닉네임별 결과", "🏠 길드 합계 / 남은 가능치", "🚫 미참여 현황", "🔍 원본 데이터", "🧮 계산기"])
 
 with tab1:
-    st.subheader("닉네임별 결과")
-    common_by_key: Dict[Tuple[str, str], Dict[str, Optional[float]]] = {}
-    for _, r in common_df_all.iterrows():
-        key = (str(r.get("nick_norm", "")).strip(), str(r.get("date_norm", "")))
-        common_by_key[key] = {
-            "battle": (
-                float(r["confirmed_battle"])
-                if pd.notna(r.get("confirmed_battle"))
-                else None
-            ),
-            "bonus": (
-                int(r["confirmed_bonus"])
-                if pd.notna(r.get("confirmed_bonus"))
-                else None
-            ),
-            "extra": (
-                int(r["confirmed_extra"])
-                if pd.notna(r.get("confirmed_extra"))
-                else None
-            ),
-        }
+    st.subheader(f"📅 {', '.join(display_dates) if len(display_dates) < 5 else '선택된 날짜들'} 결과")
+    
+    nicks = sorted(filtered_df["nickname"].unique())
+    results = []
+    
+    for nick in nicks:
+        user_data = filtered_df[filtered_df["nickname"] == nick]
+        user_scores = user_data.to_dict("records")
+        
+        # 추정 수행
+        user_common = common_df_all[common_df_all["nickname"] == nick]
+        cands = estimate_battle_score(nick, user_scores, common_df_all)
+        
+        # 확정 값 결정
+        confirmed_b = None
+        confirmed_bonus = None
+        confirmed_extra_sec = None
+        
+        if not user_common.empty:
+            date_match = user_common[user_common["date"].isin(display_dates)]
+            if not date_match.empty:
+                confirmed_b = date_match.iloc[0].get("confirmed_battle")
+                confirmed_bonus = date_match.iloc[0].get("confirmed_bonus")
+                confirmed_extra_sec = date_match.iloc[0].get("confirmed_extra")
 
-    # 닉네임 비교/출력에는 정규화된 닉네임 사용
-    nicknames = sorted(filtered["nick_norm"].dropna().astype(str).unique())
-    rows: List[Dict[str, object]] = []
-    inferred: Dict[str, Dict[str, object]] = {}
-    # 단일 날짜 모드일 때는 상세 계산, 여러 날짜 모드일 때는 비교 테이블용 요약을 출력
-    if mode == "단일 날짜":
-        for nick in nicknames:
-            g = filtered[filtered["nick_norm"].astype(str) == str(nick)]
-            total = int(g["score"].sum())
-            attacks = int(len(g))
-            avg = int(round(total / attacks)) if attacks > 0 else 0
+        # 표시용 값 결정
+        b_val = confirmed_b if confirmed_b is not None and not pd.isna(confirmed_b) else (cands[0][0] if cands else 0)
+        bonus_val = confirmed_bonus if confirmed_bonus is not None and not pd.isna(confirmed_bonus) else (cands[0][1] if cands else 0)
+        
+        # 1wave / 1sec 점수 계산
+        wave_p = 1000 + b_val * 10
+        sec_p = wave_p * WAVE_MULTIPLIER
+        
+        # 추가 초 및 최대 획득 점수
+        total_score = user_data["score"].sum()
+        extra_sec = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 0
+        
+        def calc_max(esec):
+            return int(sec_p * (BASE_SECONDS + esec) + bonus_val * 10)
 
-            ckey = (
-                str(nick).strip(),
-                str(sel_dates[0]).replace('-', '').replace('.', ''),
-            )
-            confirmed = common_by_key.get(ckey, {})
-            c_battle = confirmed.get("battle")
-            c_bonus = confirmed.get("bonus")
-            c_extra = confirmed.get("extra")
+        max_score = calc_max(extra_sec)
+        # 0초 기준으로 총점보다 낮으면 상향 조정 (추정 시)
+        if confirmed_extra_sec is None or pd.isna(confirmed_extra_sec):
+            for es in EXTRA_SECONDS_CANDIDATES:
+                if calc_max(es) >= total_score:
+                    extra_sec = es
+                    max_score = calc_max(es)
+                    break
 
-            scores_list = g["score"].astype(int).tolist()
-            candidates = infer_candidates(scores_list)
-            top2 = choose_top_pairs(candidates, nick, common_df_all)
+        results.append({
+            "닉네임": nick,
+            "공격횟수": len(user_data),
+            "총점": int(total_score),
+            "평균점수": int(total_score / len(user_data)) if len(user_data) > 0 else 0,
+            "격전지점수": b_val,
+            "추가점수": int(bonus_val),
+            "1wave당 점수": int(wave_p),
+            "추가 초": int(extra_sec),
+            "최대획득점수": int(max_score)
+        })
 
-            if c_battle is not None:
-                pps = int(1000 + 10 * float(c_battle))
-                b_use = int(c_bonus) if c_bonus is not None else 0
-                ex_use = int(c_extra) if c_extra is not None else 0
-            elif top2:
-                bt, bn = top2[0]
-                pps = int(1000 + 10 * float(bt))
-                b_use = int(bn)
-                ex_use = 0
-            else:
-                pps = 0
-                b_use = 0
-                ex_use = 0
-
-            def max_points(extra: int) -> int:
-                return int(pps) * int(BASE_SECONDS + extra) + 10 * int(b_use)
-
-            max_score = max_points(ex_use) if pps > 0 else 0
-            if pps > 0 and c_battle is None:
-                if max_score < total:
-                    for ex_try in [20, 60, 120]:
-                        if max_points(ex_try) >= total:
-                            ex_use = ex_try
-                            max_score = max_points(ex_use)
-                            break
-
-            inferred[nick] = {
-                "pps": pps,
-                "bonus": b_use,
-                "extra": ex_use,
-                "pairs": top2,
-                "valid": pps > 0,
-                "total": total,
-            }
-
-            rows.append(
-                {
-                    "닉네임": nick,
-                    "공격횟수": attacks,
-                    "총점": total,
-                    "평균점수": avg,
-                    "확정 격전지점수": (
-                        int(c_battle)
-                        if c_battle is not None and float(c_battle).is_integer()
-                        else (c_battle if c_battle is not None else "-")
-                    ),
-                    "확정 추가점수": (int(c_bonus) if c_bonus is not None else "-"),
-                    "확정 1초당 점수": (
-                        int(1000 + 10 * float(c_battle))
-                        if c_battle is not None
-                        else "-"
-                    ),
-                    "확정 추가 초": (
-                        int(c_extra)
-                        if c_extra is not None
-                        else (ex_use if c_battle is None and pps > 0 else "-")
-                    ),
-                    "최대획득점수": (max_score if pps > 0 else "-"),
-                    "추정 격전지/추가점수": (
-                        ", ".join(
-                            [
-                                f"{int(bt) if float(bt).is_integer() else bt}/{bn}"
-                                for bt, bn in top2
-                            ]
-                        )
-                        if top2
-                        else ("추정불가" if c_battle is None else "-")
-                    ),
-                }
-            )
-
-        out_df = pd.DataFrame(rows)
-    else:
-        # 여러 날짜 모드: 날짜별 비교 테이블 생성
-        compare_rows: List[Dict[str, object]] = []
-        dates_all = [str(d).replace('-', '').replace('.', '') for d in sel_dates]
-        for nick in nicknames:
-            row = {"닉네임": nick}
-            for d in dates_all:
-                g2 = filtered[
-                    (filtered["nick_norm"].astype(str) == str(nick))
-                    & (filtered["date_norm"] == d)
-                ]
-                if g2.empty:
-                    row[d] = "-"
-                    continue
-                key = (str(nick).strip(), str(d))
-                cb = common_by_key.get(key, {}).get("battle")
-                bo = common_by_key.get(key, {}).get("bonus")
-                if cb is not None:
-                    val_b = int(cb) if float(cb).is_integer() else float(cb)
-                    val_o = int(bo) if bo is not None else 0
-                    row[d] = f"{val_b}/{val_o}"
-                    continue
-                scores2 = g2["score"].astype(int).tolist()
-                cand2 = infer_candidates(scores2)
-                top2d = choose_top_pairs(cand2, nick, common_df_all)
-                row[d] = (
-                    ", ".join(
-                        [
-                            f"{int(bt) if float(bt).is_integer() else bt}/{bn}"
-                            for bt, bn in top2d
-                        ]
-                    )
-                    if top2d
-                    else "추정불가"
-                )
-            compare_rows.append(row)
-        compare_df = pd.DataFrame(compare_rows)
-    if mode == "단일 날짜":
-        # 숫자형으로 해석 가능한 열은 숫자 타입으로 변환하여 Streamlit에서 숫자 기준 정렬이 되도록 함
-        numeric_cols = [
-            "공격횟수",
-            "총점",
-            "평균점수",
-            "확정 격전지점수",
-            "확정 추가점수",
-            "확정 1초당 점수",
-            "확정 추가 초",
-            "최대획득점수",
-        ]
-        if 'out_df' in locals():
-            for col in numeric_cols:
-                if col in out_df.columns:
-                    out_df[col] = pd.to_numeric(out_df[col], errors="coerce")
-            # 총점 기준 내림차순 정렬 (순위 컬럼은 표시하지 않음)
-            if "총점" in out_df.columns:
-                out_df = out_df.sort_values("총점", ascending=False).reset_index(
-                    drop=True
-                )
-
-            st.dataframe(out_df, use_container_width=True)
-
-        # 길드 합계 및 닉네임별 남은 가능치 표시 (단일 날짜 모드에만 유효)
-        st.divider()
-        st.subheader("길드 합계")
-        included = [n for n, info in inferred.items() if info.get("valid")]
-        excluded = [n for n in inferred.keys() if n not in included]
-        guild_total = int(filtered["score"].sum())
-        included_total = int(
-            filtered[filtered["nick_norm"].isin(included)]["score"].sum()
-        )
-        excluded_total = int(
-            filtered[~filtered["nick_norm"].isin(included)]["score"].sum()
-        )
-        guild_est_max = 0
-        for n in included:
-            info = inferred[n]
-            pps_i = int(info.get("pps", 0))
-            bn_i = int(info.get("bonus", 0))
-            ex_i = int(info.get("extra", 0))
-            if pps_i <= 0:
-                continue
-            guild_est_max += pps_i * (BASE_SECONDS + ex_i) + 10 * bn_i
-        # 총점이 최대획득점수보다 클 경우 초과분을 음수로 표시하도록 변경
-        guild_remaining = guild_est_max - included_total
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("길드 총점", f"{guild_total:,}")
-        with c2:
-            st.metric("길드 추정 최대획득점수", f"{guild_est_max:,}")
-        c3, c4 = st.columns(2)
-        with c3:
-            st.metric("길드 남은 획득점수(추정 가능 인원)", f"{guild_remaining:,}")
-        with c4:
-            st.metric("추정불가 인원 총점", f"{excluded_total:,}")
-        c5, c6 = st.columns(2)
-        with c5:
-            st.metric("추정 가능 인원 수", f"{len(included):,}")
-        with c6:
-            st.metric("추정 불가 인원 수", f"{len(excluded):,}")
-        with st.expander("인원 상세(포함/제외)"):
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                st.markdown("**포함 인원(추정 가능)**")
-                st.write(", ".join(included) if included else "-")
-                st.write(f"포함 총점: {included_total:,}")
-            with cc2:
-                st.markdown("**제외 인원(추정 불가)**")
-                st.write(", ".join(excluded) if excluded else "-")
-        st.divider()
-        st.subheader("닉네임별 남은 가능치(pps/남은횟수/시간/점수)")
-        remain_rows: List[Dict[str, object]] = []
-        for n in included:
-            info = inferred[n]
-            pps_i = int(info.get("pps", 0))
-            bn_i = int(info.get("bonus", 0))
-            ex_i = int(info.get("extra", 0))
-            total_i = int(info.get("total", 0))
-            max_i = pps_i * (BASE_SECONDS + ex_i) + 10 * bn_i
-            # 닉네임별 잔여점수: 최대획득점수 - 현재총점 (초과 시 음수)
-            remain_score = max_i - total_i
-            g_nick = filtered[filtered["nick_norm"].astype(str) == str(n)]
-
-            # 실제 사용 시간 계산: (score - bonus) / pps (추가점수만 있는 공격은 시간 계산에서 제외)
-            used_time_seconds = 0.0
-            time_entries: List[float] = []
-            if pps_i > 0:
-                for sc in g_nick["score"].astype(int).tolist():
-                    if sc == bn_i:
-                        continue
-                    sec = (sc - bn_i) / float(pps_i)
-                    if sec <= 0:
-                        continue
-                    used_time_seconds += sec
-                    time_entries.append(sec)
-
-            total_time = BASE_SECONDS + ex_i
-            time_left = max(0.0, total_time - used_time_seconds)
-
-            # 평균 공격 시간 사용(없으면 격전지 기반 추정)
-            if time_entries:
-                avg_sec = sum(time_entries) / len(time_entries)
-            else:
-                avg_sec = (pps_i - 1000) / 10.0 if pps_i > 1000 else 1.0
-
-            remain_attacks = int(time_left // avg_sec) if avg_sec > 0 else 0
-
-            # 남은시간(초)은 남은획득점수에서 보너스를 제외한 후 필요한 초로 계산
-            remain_time_needed = (
-                (remain_score - remain_attacks * bn_i) / float(pps_i)
-                if pps_i > 0
-                else 0
-            )
-            remain_time_needed = int(max(0, round(remain_time_needed)))
-
-            battle_val = (pps_i - 1000) / 10.0
-            remain_rows.append(
-                {
-                    "닉네임": n,
-                    "격전지": (
-                        (
-                            int(battle_val)
-                            if float(battle_val).is_integer()
-                            else float(battle_val)
-                        )
-                        if pps_i > 0
-                        else "-"
-                    ),
-                    "pps": pps_i,
-                    "추가점수": bn_i,
-                    "추가초": ex_i,
-                    "남은공격횟수": remain_attacks,
-                    "남은시간(초)": remain_time_needed,
-                    "남은획득점수": int(remain_score),
-                }
-            )
-        remain_df = pd.DataFrame(remain_rows)
-        st.dataframe(
-            remain_df.sort_values(["남은획득점수"], ascending=False),
-            use_container_width=True,
-        )
-    else:
-        # 여러 날짜 모드: 비교 테이블 출력
-        if 'compare_df' in locals():
-            st.divider()
-            st.dataframe(compare_df, use_container_width=True)
-
+    res_df = pd.DataFrame(results).sort_values("총점", ascending=False)
+    st.dataframe(res_df, use_container_width=True, hide_index=True)
 
 with tab2:
-    st.subheader("총점 상위 15명 시각화 (normal 제외)")
-    filtered_no_normal = filtered[
-        filtered["boss_order"].astype(str).str.lower() != "normal"
-    ]
-    rank_df = (
-        filtered_no_normal.groupby("nickname")["score"]
-        .sum()
-        .reset_index()
-        .sort_values("score", ascending=False)
-        .head(15)
-    )
-    fig = px.bar(
-        rank_df,
-        x="score",
-        y="nickname",
-        orientation="h",
-        title="총점 상위 15명",
-        text_auto=True,
-    )
-    fig.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 미참여 통계도 동일 탭에 포함
-    st.divider()
-    st.subheader("보스별 미참여 현황 및 요약")
-    # 로스터 생성: common 우선이지만 common에 없는 관측 닉네임도 포함
-    common_nicks = (
-        set(common_df_all["nick_norm"].dropna().astype(str).unique())
-        if not common_df_all.empty
-        else set()
-    )
-    observed_nicks = set(all_df["nick_norm"].dropna().astype(str).unique())
-    roster = sorted(common_nicks | observed_nicks)
-
-    if not sel_dates:
-        st.info("선택된 날짜가 없습니다.")
+    st.subheader("🏦 길드 성과 요약")
+    if not results:
+        st.write("데이터가 없습니다.")
     else:
-        if mode == "단일 날짜":
-            d = str(sel_dates[0]).replace('-', '').replace('.', '')
-            df_d = all_df[all_df["date_norm"] == d]
-            # normal 보스는 미참여 집계에서 제외
-            boss_orders = sorted(
-                df_d[df_d["boss_order"].astype(str).str.lower() != "normal"][
-                    "boss_order"
-                ]
-                .astype(str)
-                .unique()
-            )
-            missing_by_boss = {}
-            for boss in boss_orders:
-                participants = set(
-                    df_d[df_d["boss_order"].astype(str) == str(boss)]["nick_norm"]
-                    .astype(str)
-                    .unique()
-                )
-                missing = [n for n in roster if n not in participants]
-                missing_by_boss[boss] = missing
-            # 전체 보스를 한눈에 볼 수 있는 요약 테이블로 표시
-            miss_summary_rows = []
-            for boss, miss in missing_by_boss.items():
-                miss_summary_rows.append(
-                    {
-                        "보스": boss,
-                        "미참여수": len(miss),
-                        "미참여자": ", ".join(miss) if miss else "-",
-                    }
-                )
-            miss_summary_df = pd.DataFrame(miss_summary_rows).sort_values("보스")
-            st.dataframe(miss_summary_df, use_container_width=True)
-            miss_count = {n: 0 for n in roster}
-            for boss in boss_orders:
-                participants = set(
-                    df_d[df_d["boss_order"].astype(str) == str(boss)]["nick_norm"]
-                    .astype(str)
-                    .unique()
-                )
-                for n in roster:
-                    if n not in participants:
-                        miss_count[n] += 1
-            groups = {}
-            for n, c in miss_count.items():
-                groups.setdefault(c, []).append(n)
-            st.divider()
-            st.subheader(f"{d} - 닉네임별 미참여 횟수")
-            for c in sorted(groups.keys()):
-                st.markdown(
-                    f"**{c}회 미참**: {', '.join(groups[c]) if groups[c] else '-'}"
-                )
-        else:
-            selected = [str(x).replace('-', '').replace('.', '') for x in sel_dates]
-            df_sel = all_df[all_df["date_norm"].isin(selected)]
-            # normal 제외
-            boss_orders = sorted(
-                df_sel[df_sel["boss_order"].astype(str).str.lower() != "normal"][
-                    "boss_order"
-                ]
-                .astype(str)
-                .unique()
-            )
-            miss_count = {n: 0 for n in roster}
-            for d in selected:
-                df_d = df_sel[df_sel["date_norm"] == d]
-                for boss in (
-                    df_d[df_d["boss_order"].astype(str).str.lower() != "normal"][
-                        "boss_order"
-                    ]
-                    .astype(str)
-                    .unique()
-                ):
-                    participants = set(
-                        df_d[df_d["boss_order"].astype(str) == str(boss)]["nick_norm"]
-                        .astype(str)
-                        .unique()
-                    )
-                    for n in roster:
-                        if n not in participants:
-                            miss_count[n] += 1
-            miss_rows = [
-                {"닉네임": n, "미참여횟수": c} for n, c in miss_count.items() if c > 0
-            ]
-            miss_df = pd.DataFrame(miss_rows).sort_values("미참여횟수", ascending=False)
-            st.dataframe(miss_df, use_container_width=True)
-
+        guild_total = sum(r["총점"] for r in results)
+        guild_max = sum(r["최대획득점수"] for r in results)
+        guild_remain = guild_max - guild_total
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("길드 총점", f"{guild_total:,}")
+        c2.metric("최대 획득 가능 점수", f"{guild_max:,}")
+        c3.metric("남은 획득 점수", f"{guild_remain:,}")
+        
+        st.divider()
+        st.subheader("⏳ 개인별 남은 가능치")
+        remain_list = []
+        for r in results:
+            remain_score = r["최대획득점수"] - r["총점"]
+            pps = r["1wave당 점수"] * WAVE_MULTIPLIER
+            
+            remain_list.append({
+                "닉네임": r["닉네임"],
+                "격전지점수": r["격전지점수"],
+                "pps (초당)": int(pps),
+                "남은 획득 점수": int(remain_score),
+                "남은 시간(초) 추정": int(remain_score / pps) if pps > 0 else 0
+            })
+        st.dataframe(pd.DataFrame(remain_list).sort_values("남은 획득 점수", ascending=False), use_container_width=True, hide_index=True)
 
 with tab3:
-    st.subheader("원본 데이터 (보스별 분리)")
-    sort_cols = [c for c in ["date", "boss_order", "rank"] if c in filtered.columns]
-    # 디버그: 현재 필터된 데이터에서 보스 목록 및 개수 표시 (문제 조사용)
-    boss_vals = filtered["boss_order"].astype(str).str.strip()
-    boss_counts = boss_vals.value_counts().to_dict()
-    st.markdown("**탐지된 보스 목록 및 행 개수**")
-    st.write(boss_counts)
-    grouped = filtered.sort_values(sort_cols).groupby("boss_order")
-    for boss_order, g in grouped:
-        title = f"보스 {boss_order}번 데이터"
-        if str(boss_order).lower() == "normal":
-            title = "일반 몬스터(normal) 데이터"
-        with st.expander(title):
-            cols = [
-                c
-                for c in [
-                    "date",
-                    "boss_order",
-                    "boss_level",
-                    "rank",
-                    "nickname",
-                    "score",
-                ]
-                if c in g.columns
-            ]
-            st.dataframe(g[cols], use_container_width=True)
-
+    st.subheader("🚫 미참여 현황")
+    roster = sorted(list(set(common_df_all["nickname"].unique()) | set(all_data_df["nickname"].unique())))
+    
+    if mode == "단일 날짜":
+        df_date = filtered_df[filtered_df["type"] == "boss"]
+        boss_list = sorted(df_date["boss_order"].unique(), key=lambda x: int(x) if x.isdigit() else 999)
+        
+        miss_summary = []
+        miss_counts = {n: 0 for n in roster}
+        
+        for b in boss_list:
+            participants = set(df_date[df_date["boss_order"] == b]["nickname"])
+            missing = [n for n in roster if n not in participants]
+            miss_summary.append({"보스": f"{b}번", "미참여자 수": len(missing), "리스트": ", ".join(missing) if missing else "없음"})
+            for m in missing: miss_counts[m] += 1
+            
+        st.table(pd.DataFrame(miss_summary))
+        
+        st.divider()
+        st.markdown(f"### {sel_date} - 닉네임별 미참여 횟수 요약")
+        count_groups = {}
+        for n, c in miss_counts.items():
+            count_groups.setdefault(c, []).append(n)
+        
+        for c in sorted(count_groups.keys(), reverse=True):
+            st.markdown(f"**{c}회 미참**: {', '.join(count_groups[c])}")
+    else:
+        st.info("전체 날짜 합산 미참여 현황")
+        df_all_dates = all_data_df[all_data_df["date"].isin(display_dates) & (all_data_df["type"] == "boss")]
+        all_miss_counts = {n: 0 for n in roster}
+        
+        for d in display_dates:
+            d_data = df_all_dates[df_all_dates["date"] == d]
+            bosses = d_data["boss_order"].unique()
+            for b in bosses:
+                parts = set(d_data[d_data["boss_order"] == b]["nickname"])
+                for n in roster:
+                    if n not in parts: all_miss_counts[n] += 1
+        
+        miss_df = pd.DataFrame([{"닉네임": n, "미참여 합계": c} for n, c in all_miss_counts.items() if c > 0])
+        st.dataframe(miss_df.sort_values("미참여 합계", ascending=False), use_container_width=True, hide_index=True)
 
 with tab4:
-    st.subheader("최대 획득 점수 계산기")
-    st.markdown(
-        "기본 1200초에 추가 획득 초(0/20/60/120)를 더해 최대 점수를 계산합니다."
-    )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        manual_battle = st.number_input(
-            "격전지 점수 (직접 입력)", min_value=0, max_value=500, value=100, step=1
-        )
-    with c2:
-        bonus_per_boss = st.selectbox(
-            "보스당 추가 점수", [0, 500, 1000, 1500, 2000, 2500, 3000], index=0
-        )
-    with c3:
-        extra_seconds = st.selectbox("추가 획득 초", [0, 20, 60, 120], index=0)
-    picked_pps = 1000 + manual_battle * 10
-    total_secs = BASE_SECONDS + int(extra_seconds)
-    total_bonus = int(bonus_per_boss)
-    max_score_calc = int(picked_pps) * int(total_secs) + 10 * int(total_bonus)
-    st.markdown(f"결과: pps {int(picked_pps):,} / 최대 {int(max_score_calc):,}점")
+    st.subheader("📋 전체 원본 데이터")
+    st.dataframe(filtered_df.sort_values(["date", "nickname", "updateTime"], ascending=[False, True, False]), use_container_width=True)
+
+with tab5:
+    st.subheader("🧮 직접 계산기")
+    bc1, bc2, bc3 = st.columns(3)
+    c_battle = bc1.number_input("격전지 점수", 6.0, 250.0, 100.0, 0.5)
+    c_bonus = bc2.selectbox("추가 점수", BONUS_CANDIDATES)
+    c_extra = bc3.selectbox("추가 초", EXTRA_SECONDS_CANDIDATES)
+    
+    c_wave = 1000 + c_battle * 10
+    c_sec = c_wave * WAVE_MULTIPLIER
+    c_max = c_sec * (BASE_SECONDS + c_extra) + c_bonus * 10
+    
+    st.info(f"""
+    **계산 결과**
+    - 1wave당 점수: **{int(c_wave):,}**
+    - 1초당 점수: **{int(c_sec):,}**
+    - 최대 획득 점수: **{int(c_max):,}**
+    """)
