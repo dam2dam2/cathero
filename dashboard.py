@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 
@@ -80,6 +81,11 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                 with open(boss_txt, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:
+                        # 여러 배열이 연결된 경우 대응 (e.g. ][ -> ],[)
+                        content = re.sub(r'\]\s*\[', '],[', content)
+                        if not content.startswith("["): content = "[" + content
+                        if not content.endswith("]"): content = content + "]"
+                        
                         data = json.loads(content)
                         if isinstance(data, dict): data = [data] # 단일 객체 대응
                         for boss_idx, boss_data_list in enumerate(data):
@@ -117,6 +123,11 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                 with open(normal_txt, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:
+                        # 여러 배열이 연결된 경우 대응
+                        content = re.sub(r'\]\s*\[', '],[', content)
+                        if not content.startswith("["): content = "[" + content
+                        if not content.endswith("]"): content = content + "]"
+                        
                         data = json.loads(content)
                         if isinstance(data, dict): data = [data]
                         for p in data:
@@ -340,12 +351,13 @@ with tab3:
         
         st.divider()
         st.markdown(f"### {sel_date} - 닉네임별 미참여 횟수 요약")
-        count_groups = {}
+        count_groups: Dict[int, List[str]] = {}
         for n, c in miss_counts.items():
             count_groups.setdefault(c, []).append(n)
         
         for c in sorted(count_groups.keys(), reverse=True):
-            st.markdown(f"**{c}회 미참**: {', '.join(count_groups[c])}")
+            names = count_groups.get(c, [])
+            st.markdown(f"**{c}회 미참**: {', '.join(map(str, names))}")
     else:
         st.info("전체 날짜 합산 미참여 현황")
         df_all_dates = all_data_df[all_data_df["date"].isin(display_dates) & (all_data_df["type"] == "boss")]
