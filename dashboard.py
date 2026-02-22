@@ -407,26 +407,28 @@ with tab3:
         df_date = filtered_df[filtered_df["type"] == "boss"]
         boss_list = sorted(df_date["boss_order"].unique(), key=lambda x: int(x) if x.isdigit() else 999)
         
-        miss_summary = []
         miss_counts = {n: 0 for n in roster}
+        copy_text_lines = [sel_date, "", "균격 미참여"]
         
-        for b in boss_list:
+        for i, b in enumerate(boss_list):
             participants = set(df_date[df_date["boss_order"] == b]["nickname"])
             missing = [n for n in roster if n not in participants]
-            miss_summary.append({"보스": f"{b}번", "미참여자 수": len(missing), "리스트": ", ".join(missing) if missing else "없음"})
+            copy_text_lines.append(f"{i+1}. {', '.join(missing) if missing else 'X'}")
             for m in missing: miss_counts[m] += 1
-            
-        st.table(pd.DataFrame(miss_summary))
         
-        st.divider()
-        st.markdown(f"### {sel_date} - 닉네임별 미참여 횟수 요약")
+        copy_text_lines.append("")
+        
         count_groups: Dict[int, List[str]] = {}
         for n, c in miss_counts.items():
-            count_groups.setdefault(c, []).append(n)
+            if c > 0:
+                count_groups.setdefault(c, []).append(n)
         
-        for c in sorted(count_groups.keys(), reverse=True):
+        for c in sorted(count_groups.keys()):
             names = count_groups.get(c, [])
-            st.markdown(f"**{c}회 미참**: {', '.join(map(str, names))}")
+            copy_text_lines.append(f"{c}회 미참 : {', '.join(map(str, names))}")
+            
+        final_copy_text = "\n".join(copy_text_lines)
+        st.text_area("복사용 텍스트 (클릭하여 복사 가능)", final_copy_text, height=400)
     else:
         st.info("전체 날짜 합산 미참여 현황")
         df_all_dates = all_data_df[all_data_df["date"].isin(display_dates) & (all_data_df["type"] == "boss")]
