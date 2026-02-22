@@ -58,6 +58,36 @@ def load_common_data(guild: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
+def load_score_data(guild: str, dates: List[str]) -> pd.DataFrame:
+    """날짜별 score.txt (개별 확정 데이터)를 로드합니다."""
+    all_rows = []
+    for d in dates:
+        path = os.path.join(DATA_DIR, guild, d, "score.txt")
+        if os.path.exists(path):
+            try:
+                # na_values="-"를 사용하여 '-'를 NaN으로 처리
+                df = pd.read_csv(path, na_values="-")
+                rename_map = {
+                    "nickname": "nickname", "닉네임": "nickname",
+                    "battle_score": "confirmed_battle", "격전지": "confirmed_battle",
+                    "add_second": "confirmed_extra", "추가초": "confirmed_extra",
+                    "add_score": "confirmed_bonus", "추가점수": "confirmed_bonus"
+                }
+                df.columns = [rename_map.get(c.lower(), c) for c in df.columns]
+                df["date"] = d
+                all_rows.append(df)
+            except Exception as e:
+                st.warning(f"{path} 로드 실패: {e}")
+    
+    if not all_rows:
+        return pd.DataFrame(columns=["date", "nickname", "confirmed_battle", "confirmed_extra", "confirmed_bonus"])
+    
+    combined_df = pd.concat(all_rows, ignore_index=True)
+    if "nickname" in combined_df.columns:
+        combined_df["nickname"] = combined_df["nickname"].astype(str).str.strip()
+    return combined_df
+
+@st.cache_data(show_spinner=False)
 def load_battle_data(guild: str) -> pd.DataFrame:
     """길드별 실전 데이터를 로드합니다 (.txt JSON 우선, .csv 차선)"""
     guild_dir = os.path.join(DATA_DIR, guild)
@@ -232,6 +262,9 @@ else:
     multi_dates = st.sidebar.multiselect("원하는 날짜들을 선택하세요", dates, default=dates[:1])
     display_dates = multi_dates
 
+# 추가 확정 데이터(score.txt) 로드
+score_df_all = load_score_data(sel_guild, display_dates)
+
 # 데이터 필터링
 filtered_df = all_data_df[all_data_df["date"].isin(display_dates)]
 
@@ -252,17 +285,31 @@ with tab1:
         user_common = common_df_all[common_df_all["nickname"] == nick]
         cands = estimate_battle_score(nick, user_scores, common_df_all)
         
-        # 확정 값 결정
+        # 확정 값 결정 (우선순위: score.txt > common.csv)
         confirmed_b = None
         confirmed_bonus = None
         confirmed_extra_sec = None
         
+        # 1. score.txt (날짜별 개별 확정 데이터) 확인
+        if not score_df_all.empty:
+            user_score_txt = score_df_all[score_df_all["nickname"] == nick]
+            if not user_score_txt.empty:
+                # 값이 NaN이 아닌 경우에만 채택
+                sb = user_score_txt.iloc[0].get("confirmed_battle")
+                se = user_score_txt.iloc[0].get("confirmed_extra")
+                so = user_score_txt.iloc[0].get("confirmed_bonus")
+                
+                if pd.notna(sb): confirmed_b = sb
+                if pd.notna(se): confirmed_extra_sec = se
+                if pd.notna(so): confirmed_bonus = so
+
+        # 2. common.csv (전체 시트/공통 데이터) 확인
         if not user_common.empty:
             date_match = user_common[user_common["date"].isin(display_dates)]
             if not date_match.empty:
-                confirmed_b = date_match.iloc[0].get("confirmed_battle")
-                confirmed_bonus = date_match.iloc[0].get("confirmed_bonus")
-                confirmed_extra_sec = date_match.iloc[0].get("confirmed_extra")
+                if confirmed_b is None: confirmed_b = date_match.iloc[0].get("confirmed_battle")
+                if confirmed_bonus is None: confirmed_bonus = date_match.iloc[0].get("confirmed_bonus")
+                if confirmed_extra_sec is None: confirmed_extra_sec = date_match.iloc[0].get("confirmed_extra")
 
         # 표시용 값 결정
         b_val = confirmed_b if confirmed_b is not None and not pd.isna(confirmed_b) else (cands[0][0] if cands else 0)
