@@ -1,6 +1,7 @@
 import os
 from typing import Dict, List, Tuple, Optional
 
+import json
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -10,11 +11,11 @@ st.set_page_config(
     page_title="CATHERO 점수 계산 대시보드", page_icon="⚔️", layout="wide"
 )
 st.title("⚔️ CATHERO 길드 점수 계산 대시보드")
-st.caption("data_csv의 CSV로 격전지/추가점수/최대점수를 확정/추정합니다.")
+st.caption("data의 CSV/JSON으로 격전지/추가점수/최대점수를 확정/추정합니다.")
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ALT_DATA_DIR = os.path.join(BASE_DIR, "data_csv")
+ALT_DATA_DIR = os.path.join(BASE_DIR, "data")
 
 BASE_SECONDS = 1200
 BATTLE_MIN_DEFAULT = 6.0
@@ -138,11 +139,37 @@ def load_all_scores(guild: str) -> pd.DataFrame:
         )
     for d in sorted([x for x in os.listdir(base) if x.isdigit()]):
         ddir = os.path.join(base, d)
-        boss_path = os.path.join(ddir, "boss.csv")
-        normal_path = os.path.join(ddir, "normal.csv")
-        if os.path.exists(boss_path):
+        
+        # 보스 데이터 로드 (.txt 우선, 없으면 .csv)
+        boss_txt = os.path.join(ddir, "boss.txt")
+        boss_csv = os.path.join(ddir, "boss.csv")
+        
+        if os.path.exists(boss_txt):
             try:
-                bdf = pd.read_csv(boss_path)
+                with open(boss_txt, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        data = json.loads(content)
+                        # JSON 데이터가 리스트인 경우와 단일 객체인 경우 처리
+                        if isinstance(data, dict):
+                            data = [data]
+                        for r in data:
+                            rows.append(
+                                {
+                                    "guild": r.get("guild", guild),
+                                    "date": str(r.get("date", d)),
+                                    "boss_order": r.get("boss_order", r.get("order", "")),
+                                    "boss_level": r.get("boss_level", r.get("level", "")),
+                                    "rank": r.get("rank", None),
+                                    "nickname": str(r.get("nickname", "")).strip(),
+                                    "score": int(r.get("score", 0)),
+                                }
+                            )
+            except Exception as e:
+                st.warning(f"보스 JSON 데이터 로드 실패: {boss_txt} ({e})")
+        elif os.path.exists(boss_csv):
+            try:
+                bdf = pd.read_csv(boss_csv)
                 for _, r in bdf.iterrows():
                     rows.append(
                         {
@@ -156,10 +183,37 @@ def load_all_scores(guild: str) -> pd.DataFrame:
                         }
                     )
             except Exception as e:
-                st.warning(f"보스 데이터 로드 실패: {boss_path} ({e})")
-        if os.path.exists(normal_path):
+                st.warning(f"보스 CSV 데이터 로드 실패: {boss_csv} ({e})")
+
+        # 일반 몬스터 데이터 로드 (.txt 우선, 없으면 .csv)
+        normal_txt = os.path.join(ddir, "normal.txt")
+        normal_csv = os.path.join(ddir, "normal.csv")
+
+        if os.path.exists(normal_txt):
             try:
-                ndf = pd.read_csv(normal_path)
+                with open(normal_txt, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        data = json.loads(content)
+                        if isinstance(data, dict):
+                            data = [data]
+                        for r in data:
+                            rows.append(
+                                {
+                                    "guild": guild,
+                                    "date": str(r.get("date", d)),
+                                    "boss_order": "normal",
+                                    "boss_level": "",
+                                    "rank": None,
+                                    "nickname": str(r.get("nickname", "")).strip(),
+                                    "score": int(r.get("score", 0)),
+                                }
+                            )
+            except Exception as e:
+                st.warning(f"일반 JSON 데이터 로드 실패: {normal_txt} ({e})")
+        elif os.path.exists(normal_csv):
+            try:
+                ndf = pd.read_csv(normal_csv)
                 for _, r in ndf.iterrows():
                     rows.append(
                         {
@@ -173,7 +227,7 @@ def load_all_scores(guild: str) -> pd.DataFrame:
                         }
                     )
             except Exception as e:
-                st.warning(f"일반 데이터 로드 실패: {normal_path} ({e})")
+                st.warning(f"일반 CSV 데이터 로드 실패: {normal_csv} ({e})")
     df = pd.DataFrame(rows)
     if df.empty:
         return df
