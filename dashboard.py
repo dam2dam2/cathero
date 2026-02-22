@@ -83,8 +83,8 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                     if content:
                         # 여러 배열이 연결된 경우 대응 (e.g. ][ -> ],[)
                         content = re.sub(r'\]\s*\[', '],[', content)
-                        if not content.startswith("["): content = "[" + content
-                        if not content.endswith("]"): content = content + "]"
+                        # 전체를 하나의 배열로 감싸서 중첩 리스트 형태로 명시 ([[...],[...]])
+                        content = "[" + content + "]"
                         
                         data = json.loads(content)
                         if isinstance(data, dict): data = [data] # 단일 객체 대응
@@ -125,8 +125,8 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                     if content:
                         # 여러 배열이 연결된 경우 대응
                         content = re.sub(r'\]\s*\[', '],[', content)
-                        if not content.startswith("["): content = "[" + content
-                        if not content.endswith("]"): content = content + "]"
+                        # 전체를 하나의 배열로 감싸서 중첩 리스트 형태로 명시
+                        content = "[" + content + "]"
                         
                         data = json.loads(content)
                         if isinstance(data, dict): data = [data]
