@@ -360,7 +360,7 @@
         "score": 300490,
         "ranking": 14
     }
-]
+],
 [
     {
         "preview": {
@@ -723,7 +723,7 @@
         "score": 6330,
         "ranking": 14
     }
-]
+],
 [
     {
         "preview": {
@@ -1063,7 +1063,7 @@
         "score": 300265,
         "ranking": 13
     }
-]
+],
 [
     {
         "preview": {
@@ -1426,7 +1426,7 @@
         "score": 352495,
         "ranking": 14
     }
-]
+],
 [
     {
         "preview": {

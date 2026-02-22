@@ -92,16 +92,18 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                             # data가 [[player, player], [player, player]] 구조인 경우 (보스 순서대로)
                             if isinstance(boss_data_list, list):
                                 for p in boss_data_list:
+                                    preview = p.get("preview", {})
                                     rows.append({
-                                        "date": date_str, "nickname": str(p.get("nickname", "Unknown")).strip(),
-                                        "score": int(p.get("score", 0)), "updateTime": p.get("updateTime", ""),
+                                        "date": date_str, "nickname": str(preview.get("nickname", "Unknown")).strip(),
+                                        "score": int(p.get("score", 0)), "updateTime": preview.get("updateTime", ""),
                                         "boss_order": str(boss_idx + 1), "type": "boss"
                                     })
                             else: # 단일 리스트 구조인 경우
                                 if isinstance(boss_data_list, dict):
+                                    preview = boss_data_list.get("preview", {})
                                     rows.append({
-                                        "date": date_str, "nickname": str(boss_data_list.get("nickname", "Unknown")).strip(),
-                                        "score": int(boss_data_list.get("score", 0)), "updateTime": boss_data_list.get("updateTime", ""),
+                                        "date": date_str, "nickname": str(preview.get("nickname", "Unknown")).strip(),
+                                        "score": int(boss_data_list.get("score", 0)), "updateTime": preview.get("updateTime", ""),
                                         "boss_order": "1", "type": "boss"
                                     })
             except Exception as e:
@@ -132,9 +134,10 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                         if isinstance(data, dict): data = [data]
                         for p in data:
                             if isinstance(p, dict):
+                                preview = p.get("preview", {})
                                 rows.append({
-                                    "date": date_str, "nickname": str(p.get("nickname", "Unknown")).strip(),
-                                    "score": int(p.get("score", 0)), "updateTime": p.get("updateTime", ""),
+                                    "date": date_str, "nickname": str(preview.get("nickname", "Unknown")).strip(),
+                                    "score": int(p.get("score", 0)), "updateTime": preview.get("updateTime", ""),
                                     "boss_order": "normal", "type": "normal"
                                 })
             except: pass
