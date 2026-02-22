@@ -195,41 +195,56 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
     boss_scores = [s for s in scores if s.get("type") == "boss"]
     if not boss_scores: return []
 
-    # updateTime 기준 정렬 (최신 우선)
-    sorted_scores = sorted(boss_scores, key=lambda x: str(x.get("updateTime", "")), reverse=True)
+    # 5의 배수인 점수들을 우선적으로 기준점으로 사용 (Reliable scores)
+    reliable_scores = [s for s in boss_scores if s.get("score", 0) % 5 == 0]
+    # Reliable scores가 없으면 전체 boss_scores 사용
+    reference_pool = reliable_scores if reliable_scores else boss_scores
+    # 최신 순으로 정렬
+    sorted_refs = sorted(reference_pool, key=lambda x: str(x.get("updateTime", "")), reverse=True)
     
     candidates = []
-    # 2. 전수 조사 (추정)
-    # 6.0 ~ 250.0 범위를 0.5 단위로 순회
-    for b_val in [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]:
-        wave_score = 1000 + b_val * 10
-        for bonus in BONUS_CANDIDATES:
-            # 가장 최신 점수를 기준으로 검증
-            latest = sorted_scores[0]["score"]
-            if latest == bonus: # 0초 공격인 경우 (추가 점수만 입수)
-                # 다른 점수들도 확인
-                ok = True
-                if len(sorted_scores) > 1:
-                    for s in sorted_scores[1:]:
-                        sc = s["score"]
-                        if sc != bonus and (sc - bonus) % wave_score != 0:
-                            ok = False; break
-                if ok: candidates.append((b_val, int(bonus)))
-            elif latest > bonus and (latest - bonus) % wave_score == 0:
-                # 다른 모든 점수들도 이 조합이 유효한지 체크
-                all_valid = True
-                for s_item in sorted_scores[1:]:
-                    sc = s_item["score"]
-                    if sc == bonus: continue
-                    if sc < bonus or (sc - bonus) % wave_score != 0:
-                        all_valid = False
-                        break
-                if all_valid:
-                    candidates.append((b_val, int(bonus)))
-            if len(candidates) >= 10: break # 너무 많으면 중단 (최적화)
-        if len(candidates) >= 10: break
+    
+    # 여러 기준점에 대해 순차적으로 시도
+    for ref_item in sorted_refs:
+        ref_score = ref_item["score"]
+        
+        for b_val in [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]:
+            wave_p = 1000 + b_val * 10
+            for bonus in BONUS_CANDIDATES:
+                # 기준점수가 보너스 점수와 일치하는 경우 (0초 공격 등)
+                if ref_score == bonus:
+                    # 모든 다른 점수들이 이 조합(wave_p, bonus)과 일치해야 함
+                    all_valid = True
+                    for other in boss_scores:
+                        s = other["score"]
+                        if s == bonus: continue
+                        if s < bonus or (s - bonus) % wave_p != 0:
+                            all_valid = False; break
+                    if all_valid:
+                        if (b_val, int(bonus)) not in candidates:
+                            candidates.append((b_val, int(bonus)))
+                
+                # 기준점수가 보너스보다 높은 경우
+                elif ref_score > bonus and (ref_score - bonus) % wave_p == 0:
+                    # 모든 다른 점수들이 이 조합과 일치하는지 확인
+                    all_valid = True
+                    for other in boss_scores:
+                        s = other["score"]
+                        if s == bonus: continue
+                        # 점수 차이가 wave_p의 배수여야 함
+                        if abs(s - ref_score) % wave_p != 0:
+                            all_valid = False; break
+                        # 보너스 차감 후에도 배수여야 함
+                        if s < bonus or (s - bonus) % wave_p != 0:
+                            all_valid = False; break
+                    
+                    if all_valid:
+                        if (b_val, int(bonus)) not in candidates:
+                            candidates.append((b_val, int(bonus)))
 
-    # common 데이터가 있다면 근접한 값 우선 정렬 로직 (생략/단순화 가능)
+            if len(candidates) >= 5: break
+        if candidates: break # 이미 후보를 찾았다면 중단 (최신 기준점 우선)
+
     return candidates[:2]
 
 # --- 사이드바 설정 ---
