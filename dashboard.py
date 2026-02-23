@@ -197,7 +197,7 @@ def load_battle_data(guild: str) -> pd.DataFrame:
 
 BONUS_CANDIDATES = [0, 500, 1000, 1500, 2000, 2500, 3000]
 
-def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataFrame, exclude_flag: bool = False) -> List[Tuple[float, int]]:
+def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataFrame, exclude_flag: bool = False, min_r: float = -1.0, max_r: float = 999.0) -> List[Tuple[float, int]]:
     """닉네임별 데이터를 바탕으로 격전지 점수를 가중치 채점 방식으로 추정합니다."""
     if not scores: return []
     
@@ -210,37 +210,53 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
     
     for b_val in b_val_range:
         wave_p = 1000 + b_val * 10
+        # range 내에 있는 경우 대폭 가점 부여 (범위 제약 절대화)
+        in_tag_range = (min_r <= b_val <= max_r)
+        
         for bonus in BONUS_CANDIDATES:
             bonus_val = bonus * 10
             total_match_score = 0
+            if in_tag_range:
+                total_match_score += 50.0 # 범위 내에 있다면 강력한 가점 부여 (우선순위)
             
             for s_item in boss_scores:
                 s = s_item["score"]
-                # 사용자 요청 수식이 (raw + bonus) * 1.08 이므로, 역산하여 정수 웨이브 확인
-                raw_s = round(s / WAVE_MULTIPLIER)
-                if raw_s < bonus_val: continue
+                found_match = False
                 
-                net_score = raw_s - bonus_val
-                if net_score % wave_p == 0:
-                    # exclude=T이면 모든 정수 웨이브를 강력한 증거로, F이면 5의 배수인 경우만 강력하게.
-                    if exclude_flag or s % 5 == 0:
-                        total_match_score += 10
-                    else:
-                        total_match_score += 2
-                else:
-                    # 소수점 웨이브 (시간 추정)
-                    waves = net_score / wave_p
-                    time_est = waves * 1.08
-                    if 0 < time_est < 1500:
-                        total_match_score += 1
+                # 1.08 역산 및 원본 점수 모두에서 정수 웨이브 확인 (상황별 배율 적용 여부 모호성 대응)
+                for multiplier in [WAVE_MULTIPLIER, 1.0]:
+                    for offset in [-1, 0, 1]:
+                        raw_s = round(s / multiplier) + offset
+                        if raw_s < bonus_val: continue
+                        
+                        net_score = raw_s - bonus_val
+                        if net_score > 0 and net_score % wave_p == 0:
+                            # exclude=T이면 모든 정수 웨이브를 강력한 증거로, F이면 5의 배수인 경우만 강력하게.
+                            if exclude_flag or s % 5 == 0:
+                                total_match_score += 10
+                            else:
+                                total_match_score += 2
+                            found_match = True
+                            break
+                    if found_match: break
                 
-            if total_match_score > 0:
+                if not found_match:
+                    # 정수 웨이브가 아니면 소수점 웨이브 (시간 추정)
+                    # 1.08 기준 역산하여 시간대 확인
+                    raw_s = round(s / WAVE_MULTIPLIER)
+                    net_score = raw_s - bonus_val
+                    if net_score > 0:
+                        waves = net_score / wave_p
+                        time_est = waves * 1.08
+                        if 0 < time_est < 1500:
+                            total_match_score += 1
+                
+            if total_match_score > 50.0 or (not in_tag_range and total_match_score > 0):
                 candidate_scores.append(((b_val, bonus), total_match_score))
 
     # 상위 후보 선정: 1. 일치 점수(내림차순), 2. b_val이 120에 근접한 정도(오름차순)
     candidate_scores.sort(key=lambda x: (-x[1], abs(x[0][0] - 120)))
     
-    # 모든 유효 후보 반환 (필터링은 호출부에서 수행)
     seen = set()
     final_cands = []
     for cand, score in candidate_scores:
@@ -305,6 +321,7 @@ with tab1:
         # score.txt에서 개별 설정(range, exclude) 추출
         target_range_str = "-"
         exclude_flag = False
+        min_r, max_r = -1.0, 999.0
         if not score_df_all.empty:
             user_score_txt = score_df_all[score_df_all["nickname"] == nick]
             if not user_score_txt.empty:
@@ -312,8 +329,15 @@ with tab1:
                 target_range_str = str(val_range) if pd.notna(val_range) else "-"
                 val_exclude = user_score_txt.iloc[0].get("exclude")
                 exclude_flag = bool(val_exclude) if pd.notna(val_exclude) else False
+                
+                if target_range_str != "-":
+                    try:
+                        pts = target_range_str.split("-")
+                        if len(pts) == 2:
+                            min_r, max_r = float(pts[0]), float(pts[1])
+                    except: pass
 
-        cands = estimate_battle_score(nick, user_scores, common_df_all, exclude_flag=exclude_flag)
+        cands = estimate_battle_score(nick, user_scores, common_df_all, exclude_flag=exclude_flag, min_r=min_r, max_r=max_r)
         
         # 확정 값 결정 (우선순위: score.txt > common.csv)
         confirmed_b = None
@@ -326,41 +350,30 @@ with tab1:
                 sb = user_score_txt.iloc[0].get("confirmed_battle")
                 se = user_score_txt.iloc[0].get("confirmed_extra")
                 so = user_score_txt.iloc[0].get("confirmed_bonus")
-                if pd.notna(sb): confirmed_b = sb
-                if pd.notna(se): confirmed_extra_sec = se
-                if pd.notna(so): confirmed_bonus = so
+                if pd.notna(sb): confirmed_b = float(sb)
+                if pd.notna(se): confirmed_extra_sec = float(se)
+                if pd.notna(so): confirmed_bonus = float(so)
 
         # 2. common.csv 확인
         if not user_common.empty:
             date_match = user_common[user_common["date"].isin(display_dates)]
             if not date_match.empty:
-                if confirmed_b is None: confirmed_b = date_match.iloc[0].get("confirmed_battle")
-                if confirmed_bonus is None: confirmed_bonus = date_match.iloc[0].get("confirmed_bonus")
-                if confirmed_extra_sec is None: confirmed_extra_sec = date_match.iloc[0].get("confirmed_extra")
+                if confirmed_b is None: confirmed_b = float(date_match.iloc[0].get("confirmed_battle"))
+                if confirmed_bonus is None: confirmed_bonus = float(date_match.iloc[0].get("confirmed_bonus"))
+                if confirmed_extra_sec is None: confirmed_extra_sec = float(date_match.iloc[0].get("confirmed_extra"))
 
         # 총점 먼저 계산 (개연성 검증용)
         attack_count = len(user_data)
         total_score = user_data[user_data["score"] > 0]["score"].sum()
 
         # 표시용 값 결정 (우선순위: 확정 데이터 > 범위 내 개연성 > 범위 내 최선 > 일반 추정)
-        b_val = confirmed_b if confirmed_b is not None and not pd.isna(confirmed_b) else 0
-        bonus_val = confirmed_bonus if confirmed_bonus is not None and not pd.isna(confirmed_bonus) else 0
+        b_val = float(confirmed_b) if confirmed_b is not None else 0.0
+        bonus_val = float(confirmed_bonus) if confirmed_bonus is not None else 0.0
 
         # 2. 누락된 값이 있다면 추정 후보(cands)에서 보충
-        if b_val == 0 or bonus_val == 0:
+        if b_val == 0.0 or bonus_val == 0.0:
             if cands:
-                # range 필터 파싱
-                min_r, max_r = -1.0, 999.0
-                has_range = False
-                if target_range_str != "-":
-                    try:
-                        pts = target_range_str.split("-")
-                        if len(pts) == 2:
-                            min_r, max_r = float(pts[0]), float(pts[1])
-                            has_range = True
-                    except: pass
-
-                def get_max_for_cand(cb, cbo, extra):
+                def get_max_for_cand(cb: float, cbo: float, extra: float):
                     wp = 1000 + cb * 10
                     # 사용자 요청 공식: ((시간 * 1wave점수 + 추가점수) * 1.08)
                     return int(((BASE_SECONDS + extra) * wp + cbo * 10) * WAVE_MULTIPLIER)
@@ -369,67 +382,68 @@ with tab1:
                 found_plausible_in_range = False
                 
                 for c_b, c_bonus in cands:
+                    c_b_f, c_bonus_f = float(c_b), float(c_bonus)
                     # 확정 데이터 필터
-                    if confirmed_b is not None and not pd.isna(confirmed_b) and c_b != confirmed_b: continue
-                    if confirmed_bonus is not None and not pd.isna(confirmed_bonus) and c_bonus != confirmed_bonus: continue
+                    if confirmed_b is not None and c_b_f != float(confirmed_b): continue
+                    if confirmed_bonus is not None and c_bonus_f != float(confirmed_bonus): continue
                     
-                    in_range = (min_r <= c_b <= max_r)
+                    in_range = (min_r <= c_b_f <= max_r)
                     if in_range and best_range_cand is None:
-                        best_range_cand = (c_b, c_bonus)
+                        best_range_cand = (c_b_f, c_bonus_f)
                     
                     # 개연성 검증
-                    tmp_extra = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 120
-                    tmp_total_max = get_max_for_cand(c_b, c_bonus, tmp_extra) * attack_count
+                    tmp_extra = confirmed_extra_sec if confirmed_extra_sec is not None else 120.0
+                    tmp_total_max = get_max_for_cand(c_b_f, c_bonus_f, float(tmp_extra)) * attack_count
                     
                     if tmp_total_max >= total_score:
-                        if has_range:
+                        if target_range_str != "-":
                             if in_range:
-                                b_val, bonus_val = c_b, c_bonus
+                                b_val, bonus_val = c_b_f, c_bonus_f
                                 found_plausible_in_range = True
                                 break
                         else:
-                            b_val, bonus_val = c_b, c_bonus
+                            b_val, bonus_val = c_b_f, c_bonus_f
                             found_plausible_in_range = True
                             break
                 
                 # 범위 내 개연성 있는 후보를 못 찾았으나, 범위 내 다른 후보는 있는 경우
-                if not found_plausible_in_range and best_range_cand:
-                    b_val, bonus_val = best_range_cand
+                if not found_plausible_in_range and best_range_cand is not None:
+                    b_val = best_range_cand[0]
+                    bonus_val = best_range_cand[1]
                 # 범위조차 만족하는 후보가 전혀 없으면 순수 첫 번째 후보 (최후의 수단)
-                elif b_val == 0:
-                    b_val, bonus_val = cands[0]
+                elif b_val == 0.0 and len(cands) > 0:
+                    b_val, bonus_val = float(cands[0][0]), float(cands[0][1])
             else:
-                # 후보가 아예 없는 경우 120 기본값
-                if b_val == 0: b_val = 120
+                if b_val == 0.0: b_val = 120.0
 
         # 1wave / 1sec 점수 계산
         wave_p = 1000 + b_val * 10
         
         # 추가 초 및 최종 최대 획득 점수 결정
-        extra_sec = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 0
+        extra_sec = confirmed_extra_sec if confirmed_extra_sec is not None else 0.0
         
-        def calc_max(esec):
+        def calc_max(esec: float):
             # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수) * 1.08
             return int(((BASE_SECONDS + esec) * wave_p + bonus_val * 10) * WAVE_MULTIPLIER)
 
         # 개별 공격 당 최대치를 구한 뒤, 전체 공격 횟수를 곱함
         max_score_single = calc_max(extra_sec)
         # 0초 기준으로 총점보다 낮으면 상향 조정
-        if confirmed_extra_sec is None or pd.isna(confirmed_extra_sec):
+        if confirmed_extra_sec is None:
             for es in EXTRA_SECONDS_CANDIDATES:
-                if calc_max(es) * attack_count >= total_score:
-                    extra_sec = es
-                    max_score_single = calc_max(es)
+                if calc_max(float(es)) * attack_count >= total_score:
+                    extra_sec = float(es)
+                    max_score_single = calc_max(extra_sec)
                     break
         
         total_max_score = max_score_single * attack_count
 
         results.append({
-            "닉네임": nick,
-            "공격횟수": attack_count,
+            "닉네임": str(nick),
+            "공격횟수": int(attack_count),
             "총점": int(total_score),
             "평균점수": int(total_score / attack_count) if attack_count > 0 else 0,
-            "격전지점수": b_val,
+            "격전지점수": float(b_val),
             "추가점수": int(bonus_val),
             "1wave당 점수": int(wave_p),
             "추가 초": int(extra_sec),

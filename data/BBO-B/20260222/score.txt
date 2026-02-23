@@ -3,7 +3,7 @@ nickname,battle_score,add_second,add_score,range,exclude
 Cat2253546,-,60,1500,160-180,T
 TOP9,-,0,0,-,F
 통장,-,0,0,-,F
-뽀시냥,-,-,-,-,F
+뽀시냥,-,20,1500,-,F
 뽀무룩,-,0,0,-,F
 이뮤기,-,0,0,-,F
 Moiri,-,-,-,-,F
