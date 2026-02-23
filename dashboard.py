@@ -253,8 +253,10 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
             if total_match_score > 50.0 or (not in_tag_range and total_match_score > 0):
                 candidate_scores.append(((b_val, bonus), total_match_score))
 
-    # 상위 후보 선정: 1. 일치 점수(내림차순), 2. b_val이 120에 근접한 정도(오름차순)
-    candidate_scores.sort(key=lambda x: (-x[1], abs(x[0][0] - 120)))
+    # Sort: match score descending, then proximity to 120 ascending
+    # range가 없을 경우, 거리에 따른 페널티를 대폭 부여하여 우연히 맞은 높은 수치보다 120 근처를 우선함
+    # (매칭 점수 10점 = 거리 20 차이와 동급 가중치)
+    candidate_scores.sort(key=lambda x: (float(x[1]) - abs(float(x[0][0]) - 120.0) * 0.3, -abs(float(x[0][0]) - 120.0)), reverse=True)
     
     seen = set()
     final_cands = []
@@ -262,6 +264,7 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
         if cand not in seen:
             final_cands.append(cand)
             seen.add(cand)
+        if len(final_cands) >= 20: break
         
     return final_cands
 
@@ -391,18 +394,27 @@ with tab1:
                     if in_range and best_range_cand is None:
                         best_range_cand = (c_b_f, c_bonus_f)
                     
-                    # 개연성 검증 (일일 총합 기준)
-                    tmp_extra = confirmed_extra_sec if confirmed_extra_sec is not None else 120.0
-                    tmp_day_max = get_max_for_cand(c_b_f, c_bonus_f, float(tmp_extra))
+                    # 개연성 검증 및 추가초 추정 (순차적: 0 -> 20 -> 60 -> 120)
+                    # 120 근처 후보는 물리적 한계를 아주 미세하게 넘어도 선택 가능하도록 허용 (1% 오차)
+                    allowed_margin = 1.01 if abs(c_b_f - 120) <= 20 else 1.0
                     
-                    if (tmp_day_max * num_days) >= total_score:
+                    def find_min_extra(cb: float, cbo: float):
+                        for es in EXTRA_SECONDS_CANDIDATES:
+                            if (get_max_for_cand(cb, cbo, float(es)) * num_days * allowed_margin) >= total_score:
+                                return float(es)
+                        return None
+
+                    est_es = find_min_extra(c_b_f, c_bonus_f)
+                    if est_es is not None:
                         if target_range_str != "-":
                             if in_range:
                                 b_val, bonus_val = c_b_f, c_bonus_f
+                                if confirmed_extra_sec is None: extra_sec = est_es
                                 found_plausible_in_range = True
                                 break
                         else:
                             b_val, bonus_val = c_b_f, c_bonus_f
+                            if confirmed_extra_sec is None: extra_sec = est_es
                             found_plausible_in_range = True
                             break
                 
@@ -416,26 +428,28 @@ with tab1:
             else:
                 if b_val == 0.0: b_val = 120.0
 
+        # 만약 확정 데이터도 없고 추정도 실패했다면 기본값 사용
+        if b_val == 0.0: b_val = 120.0
+        
         # 1wave / 1sec 점수 계산
         wave_p = 1000 + b_val * 10
-        
-        # 추가 초 및 최종 최대 획득 점수 결정
-        extra_sec = confirmed_extra_sec if confirmed_extra_sec is not None else 0.0
         
         def calc_max(esec: float):
             # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수*10) * 1.08
             return int(((BASE_SECONDS + esec) * wave_p + bonus_val * 10.0) * WAVE_MULTIPLIER)
 
-        # 개별 공격 당 최대치를 구한 뒤, 전체 날짜 수를 곱함 (공격 횟수 아님)
-        max_score_single = calc_max(extra_sec)
-        # 0초 기준으로 총점보다 낮으면 상향 조정 (기간 전체 총점 vs 예산 합계)
-        if confirmed_extra_sec is None:
+        # 추가 초 결정
+        if confirmed_extra_sec is not None:
+            extra_sec = confirmed_extra_sec
+        elif extra_sec == 0.0:
+            # 추정 엔진에서 세팅되지 않은 경우 (0초부터 순차 확인)
             for es in EXTRA_SECONDS_CANDIDATES:
                 if calc_max(float(es)) * num_days >= total_score:
                     extra_sec = float(es)
-                    max_score_single = calc_max(extra_sec)
                     break
         
+        # 개별 공격 당 최대치를 구한 뒤, 전체 날짜 수를 곱함
+        max_score_single = calc_max(extra_sec)
         total_max_score = max_score_single * num_days
 
         results.append({
