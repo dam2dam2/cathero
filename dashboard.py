@@ -320,7 +320,10 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 닉네임별 결과", "🏠 길드
 with tab1:
     st.subheader(f"📅 {', '.join(display_dates) if len(display_dates) < 5 else '선택된 날짜들'} 결과")
     
-    nicks = sorted(filtered_df["nickname"].unique())
+    # nicks: data와 score.txt 전체 유저 합집합
+    nicks_from_data = set(filtered_df["nickname"].unique())
+    nicks_from_score = set(score_df_all["nickname"].unique()) if not score_df_all.empty else set()
+    nicks = sorted(list(nicks_from_data | nicks_from_score))
     results = []
     
     for nick in nicks:
@@ -380,61 +383,62 @@ with tab1:
         total_score = user_data[user_data["score"] > 0]["score"].sum()
 
         # 표시용 값 결정 (우선순위: 확정 데이터 > 단계별 상향 추정)
-        b_val = float(confirmed_b) if confirmed_b is not None else 0.0
-        bonus_val = float(confirmed_bonus) if confirmed_bonus is not None else 0.0
-        extra_sec = float(confirmed_extra_sec) if confirmed_extra_sec is not None else 0.0
+        # score.txt에 값이 있다면 최우선으로 사용하며, 없을 경우만 추정 후보(cands) 사용
+        b_val_base = float(confirmed_b) if confirmed_b is not None else None
+        bonus_val_base = float(confirmed_bonus) if confirmed_bonus is not None else None
+        extra_sec_base = float(confirmed_extra_sec) if confirmed_extra_sec is not None else None
         
         # 공식: ((1200 + 추가초) * (1000 + b*10) + bonus*10) * 1.08 (배수 제거)
         def get_max_for_config(cb: float, cbo: float, es: float):
             wp = 1000.0 + cb * 10.0
             return int(((BASE_SECONDS + es) * wp + cbo * 10.0) * WAVE_MULTIPLIER)
 
-        # 2. 확정되지 않은 값이 있다면 로직에 따라 결정
-        if confirmed_b is None or confirmed_bonus is None or confirmed_extra_sec is None:
-            if cands:
-                scaling_found = False
-                
-                # 추가 초 후보군 [0, 20, 60, 120] 순차적 확인
-                for es_cand in EXTRA_SECONDS_CANDIDATES:
-                    if confirmed_extra_sec is not None and float(es_cand) != float(confirmed_extra_sec):
-                        continue
-                        
-                    # 현재 단계에서 가능한 b_val 후보들 검토
-                    for c_b_f, c_bonus_f in cands:
-                        if confirmed_b is not None and c_b_f != float(confirmed_b): continue
-                        if confirmed_bonus is not None and c_bonus_f != float(confirmed_bonus): continue
-                        
-                        calc_m = get_max_for_config(c_b_f, c_bonus_f, float(es_cand))
-                        if calc_m >= total_score:
-                            b_val, bonus_val, extra_sec = c_b_f, c_bonus_f, float(es_cand)
-                            scaling_found = True
-                            break
-                    if scaling_found: break
-                
-                # 120초에서도 가능한 후보가 없는 경우 (강제 상향)
-                if not scaling_found:
-                    # 가장 타당한 후보(cands[0])를 기준으로 b_val 강제 상향
-                    best_c_b, best_c_bonus = cands[0]
-                    # 상향 단위: exclude이면 0.1, 아니면 0.5
-                    up_step = 0.1 if exclude_flag else 0.5
-                    curr_b = best_c_b
-                    curr_es = 120.0 if confirmed_extra_sec is None else float(confirmed_extra_sec)
-                    
-                    while get_max_for_config(curr_b, best_c_bonus, curr_es) < total_score and curr_b < 400:
-                        curr_b = round(curr_b + up_step, 1)
-                    
-                    b_val, bonus_val, extra_sec = curr_b, best_c_bonus, curr_es
-            else:
-                # 후보조차 없는 경우 기본값
-                b_val = b_val if b_val != 0.0 else 120.0
-                bonus_val = bonus_val
-                # 0초부터 확인하여 총점 넘기는 최소 추가초
-                if confirmed_extra_sec is None:
-                    for es in EXTRA_SECONDS_CANDIDATES:
-                        if get_max_for_config(b_val, bonus_val, float(es)) >= total_score:
-                            extra_sec = float(es)
-                            break
-                    else: extra_sec = 120.0
+        # 추정/선택 로직 시작
+        b_val, bonus_val, extra_sec = 0.0, 0.0, 0.0
+        scaling_found = False
+
+        # 1. 가능한 모든 후보 조합 (확정값 포함) 생성
+        match_candidates = []
+        if b_val_base is not None and bonus_val_base is not None:
+            match_candidates = [(b_val_base, bonus_val_base)]
+        elif cands:
+            # 확정된 필드가 있다면 그 필드를 고정하고 cands 필터링
+            for c_b, c_bonus in cands:
+                if b_val_base is not None and c_b != b_val_base: continue
+                if bonus_val_base is not None and c_bonus != bonus_val_base: continue
+                match_candidates.append((c_b, c_bonus))
+        
+        # 만약 score.txt에 있는데 cands에 없는 경우(우연한 매칭 실패 등)에도 score.txt 보호
+        if not match_candidates and (b_val_base is not None or bonus_val_base is not None):
+            match_candidates = [(b_val_base if b_val_base is not None else 120.0, 
+                                 bonus_val_base if bonus_val_base is not None else 0.0)]
+        elif not match_candidates:
+            match_candidates = [(120.0, 0.0)]
+
+        # 2. 추가 초별로 최적 후보 탐색
+        for es_cand in EXTRA_SECONDS_CANDIDATES:
+            if extra_sec_base is not None and float(es_cand) != float(extra_sec_base):
+                continue
+            
+            for c_b_f, c_bonus_f in match_candidates:
+                calc_m = get_max_for_config(c_b_f, c_bonus_f, float(es_cand))
+                if calc_m >= total_score:
+                    b_val, bonus_val, extra_sec = c_b_f, c_bonus_f, float(es_cand)
+                    scaling_found = True
+                    break
+            if scaling_found: break
+
+        # 3. 모든 시도에도 Max < Total 인 경우 강제 상향 (120초 우선)
+        if not scaling_found:
+            best_c_b, best_c_bonus = match_candidates[0]
+            curr_es = extra_sec_base if extra_sec_base is not None else 120.0
+            up_step = 0.1 if exclude_flag else 0.5
+            curr_b = best_c_b
+            
+            while get_max_for_config(curr_b, best_c_bonus, curr_es) < total_score and curr_b < 500:
+                curr_b = round(curr_b + up_step, 1)
+            
+            b_val, bonus_val, extra_sec = curr_b, best_c_bonus, curr_es
 
         # 최종 최대 점수 계산 (배수 없이 단일 합산 포텐셜)
         total_max_score = get_max_for_config(b_val, bonus_val, extra_sec)
