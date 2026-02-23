@@ -325,31 +325,40 @@ with tab1:
         # 총점 먼저 계산 (개연성 검증용)
         total_score = user_data[user_data["score"] > 0]["score"].sum()
 
-        # 표시용 값 결정 (개연성 검증 포함: 총점 <= 최대획득가능점수)
+        # 표시용 값 결정 (우선순위: 확정 데이터 > 개연성 있는 추정)
         b_val = 0
         bonus_val = 0
         
-        if confirmed_b is not None and not pd.isna(confirmed_b):
-            b_val = confirmed_b
-            bonus_val = confirmed_bonus if confirmed_bonus is not None and not pd.isna(confirmed_bonus) else 0
-        elif cands:
-            # 후보 중 개연성이 있는 첫 번째 항목 선택
-            found_plausible = False
-            for c_b, c_bonus in cands:
-                tmp_wave_p = 1000 + c_b * 10
-                tmp_sec_p = tmp_wave_p * WAVE_MULTIPLIER
-                # 추가초가 미정이라면 최대치(120) 기준, 확정이라면 해당 초 기준
-                tmp_extra = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 120
-                tmp_max = int(tmp_sec_p * (BASE_SECONDS + tmp_extra) + c_bonus * 10)
+        # 1. 확정 데이터가 있는 경우 우선 채택
+        b_val = confirmed_b if confirmed_b is not None and not pd.isna(confirmed_b) else 0
+        bonus_val = confirmed_bonus if confirmed_bonus is not None and not pd.isna(confirmed_bonus) else 0
+
+        # 2. 누락된 값이 있다면 추정 후보(cands)에서 보충
+        if b_val == 0 or bonus_val == 0:
+            if cands:
+                found_plausible = False
+                for c_b, c_bonus in cands:
+                    # 확정된 값이 있다면 해당 후보만 필터링
+                    if confirmed_b is not None and not pd.isna(confirmed_b) and c_b != confirmed_b: continue
+                    if confirmed_bonus is not None and not pd.isna(confirmed_bonus) and c_bonus != confirmed_bonus: continue
+                    
+                    # 개연성 검증
+                    tmp_wave_p = 1000 + c_b * 10
+                    tmp_sec_p = tmp_wave_p * WAVE_MULTIPLIER
+                    tmp_extra = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 120
+                    tmp_max = int(tmp_sec_p * (BASE_SECONDS + tmp_extra) + c_bonus * 10)
+                    
+                    if tmp_max >= total_score:
+                        if b_val == 0: b_val = c_b
+                        if bonus_val == 0: bonus_val = c_bonus
+                        found_plausible = True
+                        break
                 
-                if tmp_max >= total_score:
-                    b_val, bonus_val = c_b, c_bonus
-                    found_plausible = True
-                    break
-            
-            if not found_plausible:
-                b_val, bonus_val = cands[0] # 없으면 최선책 선택
-        
+                # 개연성 있는 후보가 없으면 첫 번째 후보로 보충
+                if not found_plausible:
+                    if b_val == 0: b_val = cands[0][0]
+                    if bonus_val == 0: bonus_val = cands[0][1]
+
         # 1wave / 1sec 점수 계산
         wave_p = 1000 + b_val * 10
         sec_p = wave_p * WAVE_MULTIPLIER
