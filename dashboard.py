@@ -254,9 +254,17 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
                 candidate_scores.append(((b_val, bonus), total_match_score))
 
     # Sort: match score descending, then proximity to 120 ascending
-    # range가 없을 경우, 거리에 따른 페널티를 대폭 부여하여 우연히 맞은 높은 수치보다 120 근처를 우선함
-    # (매칭 점수 10점 = 거리 20 차이와 동급 가중치)
-    candidate_scores.sort(key=lambda x: (float(x[1]) - abs(float(x[0][0]) - 120.0) * 0.3, -abs(float(x[0][0]) - 120.0)), reverse=True)
+    # 매칭 점수(match score)의 가중치를 높이고, 120 근접도(proximity)의 가중치를 낮춤
+    # 추가 점수가 0인 경우에 약간의 가산점을 부여하여 우선순위 조정
+    def calculate_rank(item):
+        (bv, bonus), match_score = item
+        # 120 근접도 페널티 (0.1로 낮춤, 기존 0.3)
+        proximity_penalty = abs(float(bv) - 120.0) * 0.1
+        # 추가 점수가 0인 경우 매칭 점수에 0.5 가점 (우선순위)
+        bonus_priority = 0.5 if bonus == 0 else 0.0
+        return (float(match_score) + bonus_priority - proximity_penalty, -abs(float(bv) - 120.0))
+
+    candidate_scores.sort(key=calculate_rank, reverse=True)
     
     seen = set()
     final_cands = []
@@ -448,9 +456,17 @@ with tab1:
                     extra_sec = float(es)
                     break
         
-        # 개별 공격 당 최대치를 구한 뒤, 전체 날짜 수를 곱함
+        # 개별 공격 당 최대치를 구한 뒤, 전체 보스 수(기본 7)를 고려하여 계산
+        # 최대 획득 점수 = 현재 총점 + (남은 공격 횟수 * 단일 최대 점수)
+        # 이렇게 하면 총점이 최대 획득 점수를 넘지 않음
         max_score_single = calc_max(extra_sec)
-        total_max_score = max_score_single * num_days
+        
+        # 보스 수는 일반 몬스터 포함 7회로 가정 (data/BBO-B/20260222 기준)
+        total_boss_slots = 7
+        current_attack_count = int(attack_count)
+        remain_attacks = max(0, total_boss_slots - current_attack_count)
+        
+        total_max_score = int(total_score) + (remain_attacks * max_score_single)
 
         results.append({
             "닉네임": str(nick),
