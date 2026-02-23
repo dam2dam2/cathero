@@ -206,7 +206,9 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
     if not boss_scores: return []
 
     candidate_scores = []
-    b_val_range = [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]
+    # exclude_flag가 True이면 0.1 단위, 아니면 0.5 단위로 후보 생성
+    step = 0.1 if exclude_flag else 0.5
+    b_val_range = [round(x * step, 1) for x in range(int(BATTLE_MIN / step), int(BATTLE_MAX / step) + 1)]
     
     for b_val in b_val_range:
         wave_p = 1000 + b_val * 10
@@ -377,96 +379,65 @@ with tab1:
         attack_count = len(user_data)
         total_score = user_data[user_data["score"] > 0]["score"].sum()
 
-        # 표시용 값 결정 (우선순위: 확정 데이터 > 범위 내 개연성 > 범위 내 최선 > 일반 추정)
+        # 표시용 값 결정 (우선순위: 확정 데이터 > 단계별 상향 추정)
         b_val = float(confirmed_b) if confirmed_b is not None else 0.0
         bonus_val = float(confirmed_bonus) if confirmed_bonus is not None else 0.0
+        extra_sec = float(confirmed_extra_sec) if confirmed_extra_sec is not None else 0.0
+        
+        # 공식: ((1200 + 추가초) * (1000 + b*10) + bonus*10) * 1.08 (배수 제거)
+        def get_max_for_config(cb: float, cbo: float, es: float):
+            wp = 1000.0 + cb * 10.0
+            return int(((BASE_SECONDS + es) * wp + cbo * 10.0) * WAVE_MULTIPLIER)
 
-        # 2. 누락된 값이 있다면 추정 후보(cands)에서 보충
-        if b_val == 0.0 or bonus_val == 0.0:
+        # 2. 확정되지 않은 값이 있다면 로직에 따라 결정
+        if confirmed_b is None or confirmed_bonus is None or confirmed_extra_sec is None:
             if cands:
-                def get_max_for_cand(cb: float, cbo: float, extra: float):
-                    # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수*10) * 1.08
-                    wp = 1000.0 + cb * 10.0
-                    return int(((BASE_SECONDS + extra) * wp + cbo * 10.0) * WAVE_MULTIPLIER)
-
-                best_range_cand = None
-                found_plausible_in_range = False
+                scaling_found = False
                 
-                for c_b, c_bonus in cands:
-                    c_b_f, c_bonus_f = float(c_b), float(c_bonus)
-                    # 확정 데이터 필터
-                    if confirmed_b is not None and c_b_f != float(confirmed_b): continue
-                    if confirmed_bonus is not None and c_bonus_f != float(confirmed_bonus): continue
-                    
-                    in_range = (min_r <= c_b_f <= max_r)
-                    if in_range and best_range_cand is None:
-                        best_range_cand = (c_b_f, c_bonus_f)
-                    
-                    # 개연성 검증 및 추가초 추정 (순차적: 0 -> 20 -> 60 -> 120)
-                    # 120 근처 후보는 물리적 한계를 아주 미세하게 넘어도 선택 가능하도록 허용 (1% 오차)
-                    allowed_margin = 1.01 if abs(c_b_f - 120) <= 20 else 1.0
-                    
-                    def find_min_extra(cb: float, cbo: float):
-                        for es in EXTRA_SECONDS_CANDIDATES:
-                            if (get_max_for_cand(cb, cbo, float(es)) * num_days * allowed_margin) >= total_score:
-                                return float(es)
-                        return None
-
-                    est_es = find_min_extra(c_b_f, c_bonus_f)
-                    if est_es is not None:
-                        if target_range_str != "-":
-                            if in_range:
-                                b_val, bonus_val = c_b_f, c_bonus_f
-                                if confirmed_extra_sec is None: extra_sec = est_es
-                                found_plausible_in_range = True
-                                break
-                        else:
-                            b_val, bonus_val = c_b_f, c_bonus_f
-                            if confirmed_extra_sec is None: extra_sec = est_es
-                            found_plausible_in_range = True
+                # 추가 초 후보군 [0, 20, 60, 120] 순차적 확인
+                for es_cand in EXTRA_SECONDS_CANDIDATES:
+                    if confirmed_extra_sec is not None and float(es_cand) != float(confirmed_extra_sec):
+                        continue
+                        
+                    # 현재 단계에서 가능한 b_val 후보들 검토
+                    for c_b_f, c_bonus_f in cands:
+                        if confirmed_b is not None and c_b_f != float(confirmed_b): continue
+                        if confirmed_bonus is not None and c_bonus_f != float(confirmed_bonus): continue
+                        
+                        calc_m = get_max_for_config(c_b_f, c_bonus_f, float(es_cand))
+                        if calc_m >= total_score:
+                            b_val, bonus_val, extra_sec = c_b_f, c_bonus_f, float(es_cand)
+                            scaling_found = True
                             break
+                    if scaling_found: break
                 
-                # 범위 내 개연성 있는 후보를 못 찾았으나, 범위 내 다른 후보는 있는 경우
-                if not found_plausible_in_range and best_range_cand is not None:
-                    b_val = best_range_cand[0]
-                    bonus_val = best_range_cand[1]
-                # 범위조차 만족하는 후보가 전혀 없으면 순수 첫 번째 후보 (최후의 수단)
-                elif b_val == 0.0 and len(cands) > 0:
-                    b_val, bonus_val = float(cands[0][0]), float(cands[0][1])
+                # 120초에서도 가능한 후보가 없는 경우 (강제 상향)
+                if not scaling_found:
+                    # 가장 타당한 후보(cands[0])를 기준으로 b_val 강제 상향
+                    best_c_b, best_c_bonus = cands[0]
+                    # 상향 단위: exclude이면 0.1, 아니면 0.5
+                    up_step = 0.1 if exclude_flag else 0.5
+                    curr_b = best_c_b
+                    curr_es = 120.0 if confirmed_extra_sec is None else float(confirmed_extra_sec)
+                    
+                    while get_max_for_config(curr_b, best_c_bonus, curr_es) < total_score and curr_b < 400:
+                        curr_b = round(curr_b + up_step, 1)
+                    
+                    b_val, bonus_val, extra_sec = curr_b, best_c_bonus, curr_es
             else:
-                if b_val == 0.0: b_val = 120.0
+                # 후보조차 없는 경우 기본값
+                b_val = b_val if b_val != 0.0 else 120.0
+                bonus_val = bonus_val
+                # 0초부터 확인하여 총점 넘기는 최소 추가초
+                if confirmed_extra_sec is None:
+                    for es in EXTRA_SECONDS_CANDIDATES:
+                        if get_max_for_config(b_val, bonus_val, float(es)) >= total_score:
+                            extra_sec = float(es)
+                            break
+                    else: extra_sec = 120.0
 
-        # 만약 확정 데이터도 없고 추정도 실패했다면 기본값 사용
-        if b_val == 0.0: b_val = 120.0
-        
-        # 1wave / 1sec 점수 계산
-        wave_p = 1000 + b_val * 10
-        
-        def calc_max(esec: float):
-            # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수*10) * 1.08
-            return int(((BASE_SECONDS + esec) * wave_p + bonus_val * 10.0) * WAVE_MULTIPLIER)
-
-        # 추가 초 결정
-        if confirmed_extra_sec is not None:
-            extra_sec = confirmed_extra_sec
-        elif extra_sec == 0.0:
-            # 추정 엔진에서 세팅되지 않은 경우 (0초부터 순차 확인)
-            for es in EXTRA_SECONDS_CANDIDATES:
-                if calc_max(float(es)) * num_days >= total_score:
-                    extra_sec = float(es)
-                    break
-        
-        # 개별 공격 당 최대치를 구한 뒤, 전체 보스 수(기본 7)를 고려하여 계산
-        # 최대 획득 점수 = 현재 총점 + (남은 공격 횟수 * 단일 최대 점수)
-        # 이렇게 하면 총점이 최대 획득 점수를 넘지 않음
-        max_score_single = calc_max(extra_sec)
-        
-        # 보스 수는 일반 몬스터 포함 7회로 가정 (data/BBO-B/20260222 기준)
-        total_boss_slots = 7
-        current_attack_count = int(attack_count)
-        remain_attacks = max(0, total_boss_slots - current_attack_count)
-        
-        total_max_score = int(total_score) + (remain_attacks * max_score_single)
+        # 최종 최대 점수 계산 (배수 없이 단일 합산 포텐셜)
+        total_max_score = get_max_for_config(b_val, bonus_val, extra_sec)
 
         results.append({
             "닉네임": str(nick),
@@ -475,7 +446,7 @@ with tab1:
             "평균점수": int(total_score / attack_count) if attack_count > 0 else 0,
             "격전지점수": float(b_val),
             "추가점수": int(bonus_val),
-            "1wave당 점수": int(wave_p),
+            "1wave당 점수": int(1000 + b_val * 10),
             "추가 초": int(extra_sec),
             "최대획득점수": int(total_max_score)
         })
