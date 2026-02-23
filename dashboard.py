@@ -229,8 +229,8 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
             if total_match_score > 0:
                 candidate_scores.append(((b_val, bonus), total_match_score))
 
-    # 점수 순으로 정렬하여 상위 후보 반환
-    candidate_scores.sort(key=lambda x: x[1], reverse=True)
+    # 상위 후보 선정: 1. 일치 점수(내림차순), 2. b_val이 120에 근접한 정도(오름차순)
+    candidate_scores.sort(key=lambda x: (-x[1], abs(x[0][0] - 120)))
     
     # 중복 제거 및 상위 3개 추출
     seen = set()
