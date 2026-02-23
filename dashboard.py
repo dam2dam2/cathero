@@ -24,7 +24,7 @@ BASE_SECONDS = 1200
 WAVE_MULTIPLIER = 1.08
 BATTLE_MIN = 6.0
 BATTLE_MAX = 250.0
-BONUS_CANDIDATES = [0, 500, 1000, 1500, 2500, 3000]
+BONUS_CANDIDATES = [0, 500, 1000, 1500, 2000, 2500, 3000]
 EXTRA_SECONDS_CANDIDATES = [0, 20, 60, 120]
 
 # --- 데이터 로딩 함수 ---
@@ -206,10 +206,8 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
     if not boss_scores: return []
 
     candidate_scores = []
-    # b_val은 0.5 단위 고정
     b_val_range = [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]
     
-    # 1.08은 근사치이므로 주변 범위를 탐색하거나 오차를 허용
     for b_val in b_val_range:
         wave_p = 1000 + b_val * 10
         for bonus in BONUS_CANDIDATES:
@@ -218,18 +216,19 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
             
             for s_item in boss_scores:
                 s = s_item["score"]
-                if s < bonus_val: continue
+                # 사용자 요청 수식이 (raw + bonus) * 1.08 이므로, 역산하여 정수 웨이브 확인
+                raw_s = round(s / WAVE_MULTIPLIER)
+                if raw_s < bonus_val: continue
                 
-                net_score = s - bonus_val
-                # 1. 정수 웨이브 여부 확인
+                net_score = raw_s - bonus_val
                 if net_score % wave_p == 0:
-                    # exclude=F(기본) 이면 5의 배수 점수만 강력한 증거로 채택
-                    # exclude=T 이면 모든 정수 웨이브를 강력한 증거로 채택
+                    # exclude=T이면 모든 정수 웨이브를 강력한 증거로, F이면 5의 배수인 경우만 강력하게.
                     if exclude_flag or s % 5 == 0:
                         total_match_score += 10
                     else:
-                        total_match_score += 2 # 1의 배수 가중치 (중간 수준)
+                        total_match_score += 2
                 else:
+                    # 소수점 웨이브 (시간 추정)
                     waves = net_score / wave_p
                     time_est = waves * 1.08
                     if 0 < time_est < 1500:
@@ -241,14 +240,13 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
     # 상위 후보 선정: 1. 일치 점수(내림차순), 2. b_val이 120에 근접한 정도(오름차순)
     candidate_scores.sort(key=lambda x: (-x[1], abs(x[0][0] - 120)))
     
-    # 중복 제거 및 상위 3개 추출
+    # 모든 유효 후보 반환 (필터링은 호출부에서 수행)
     seen = set()
     final_cands = []
     for cand, score in candidate_scores:
         if cand not in seen:
             final_cands.append(cand)
             seen.add(cand)
-        if len(final_cands) >= 3: break
         
     return final_cands
 
@@ -344,66 +342,79 @@ with tab1:
         attack_count = len(user_data)
         total_score = user_data[user_data["score"] > 0]["score"].sum()
 
-        # 표시용 값 결정 (우선순위: 확정 데이터 > 범위 필터 > 개연성 있는 추정)
-        b_val = 0
-        bonus_val = 0
-        
+        # 표시용 값 결정 (우선순위: 확정 데이터 > 범위 내 개연성 > 범위 내 최선 > 일반 추정)
         b_val = confirmed_b if confirmed_b is not None and not pd.isna(confirmed_b) else 0
         bonus_val = confirmed_bonus if confirmed_bonus is not None and not pd.isna(confirmed_bonus) else 0
 
+        # 2. 누락된 값이 있다면 추정 후보(cands)에서 보충
         if b_val == 0 or bonus_val == 0:
             if cands:
                 # range 필터 파싱
                 min_r, max_r = -1.0, 999.0
+                has_range = False
                 if target_range_str != "-":
                     try:
                         pts = target_range_str.split("-")
                         if len(pts) == 2:
                             min_r, max_r = float(pts[0]), float(pts[1])
+                            has_range = True
                     except: pass
 
-                found_plausible = False
+                def get_max_for_cand(cb, cbo, extra):
+                    wp = 1000 + cb * 10
+                    # 사용자 요청 공식: ((시간 * 1wave점수 + 추가점수) * 1.08)
+                    return int(((BASE_SECONDS + extra) * wp + cbo * 10) * WAVE_MULTIPLIER)
+
+                best_range_cand = None
+                found_plausible_in_range = False
+                
                 for c_b, c_bonus in cands:
-                    # 1. 확정 데이터 필터
+                    # 확정 데이터 필터
                     if confirmed_b is not None and not pd.isna(confirmed_b) and c_b != confirmed_b: continue
                     if confirmed_bonus is not None and not pd.isna(confirmed_bonus) and c_bonus != confirmed_bonus: continue
                     
-                    # 2. range 필터
-                    if not (min_r <= c_b <= max_r): continue
-
-                    # 3. 개연성 검증 (총 공격 횟수 기준 최대치 합산)
-                    tmp_wave_p = 1000 + c_b * 10
-                    tmp_sec_p = tmp_wave_p * WAVE_MULTIPLIER
+                    in_range = (min_r <= c_b <= max_r)
+                    if in_range and best_range_cand is None:
+                        best_range_cand = (c_b, c_bonus)
+                    
+                    # 개연성 검증
                     tmp_extra = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 120
-                    # 누적 최대 점수 = (1회 최대 점수) * 공격 횟수
-                    single_max = int(tmp_sec_p * (BASE_SECONDS + tmp_extra) + c_bonus * 10)
-                    tmp_total_max = single_max * attack_count
+                    tmp_total_max = get_max_for_cand(c_b, c_bonus, tmp_extra) * attack_count
                     
                     if tmp_total_max >= total_score:
-                        if b_val == 0: b_val = c_b
-                        if bonus_val == 0: bonus_val = c_bonus
-                        found_plausible = True
-                        break
+                        if has_range:
+                            if in_range:
+                                b_val, bonus_val = c_b, c_bonus
+                                found_plausible_in_range = True
+                                break
+                        else:
+                            b_val, bonus_val = c_b, c_bonus
+                            found_plausible_in_range = True
+                            break
                 
-                # 개연성 있는 후보가 없으면 첫 번째 후보로 보충
-                if not found_plausible:
-                    if b_val == 0: b_val = cands[0][0]
-                    if bonus_val == 0: bonus_val = cands[0][1]
+                # 범위 내 개연성 있는 후보를 못 찾았으나, 범위 내 다른 후보는 있는 경우
+                if not found_plausible_in_range and best_range_cand:
+                    b_val, bonus_val = best_range_cand
+                # 범위조차 만족하는 후보가 전혀 없으면 순수 첫 번째 후보 (최후의 수단)
+                elif b_val == 0:
+                    b_val, bonus_val = cands[0]
+            else:
+                # 후보가 아예 없는 경우 120 기본값
+                if b_val == 0: b_val = 120
 
         # 1wave / 1sec 점수 계산
         wave_p = 1000 + b_val * 10
-        sec_p = wave_p * WAVE_MULTIPLIER
         
         # 추가 초 및 최종 최대 획득 점수 결정
         extra_sec = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 0
         
         def calc_max(esec):
-            # 1회 공격 당 최대 점수
-            return int(sec_p * (BASE_SECONDS + esec) + bonus_val * 10)
+            # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수) * 1.08
+            return int(((BASE_SECONDS + esec) * wave_p + bonus_val * 10) * WAVE_MULTIPLIER)
 
         # 개별 공격 당 최대치를 구한 뒤, 전체 공격 횟수를 곱함
         max_score_single = calc_max(extra_sec)
-        # 0초 기준으로 총점이 (공격 횟수 * 싱글 최대치)보다 낮으면 상향 조정
+        # 0초 기준으로 총점보다 낮으면 상향 조정
         if confirmed_extra_sec is None or pd.isna(confirmed_extra_sec):
             for es in EXTRA_SECONDS_CANDIDATES:
                 if calc_max(es) * attack_count >= total_score:
