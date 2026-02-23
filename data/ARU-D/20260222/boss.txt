@@ -1933,15 +1933,15 @@
             "equipmentRideId": 18,
             "profileDesignFrameId": -1,
             "profileDesignTitleId": -1,
-            "bestWaveCode": 131001008,
-            "bestFishLevel": 4580,
-            "updateTime": "2026-02-22T22:47:18.816Z",
+            "bestWaveCode": 131002000,
+            "bestFishLevel": 4586,
+            "updateTime": "2026-02-23T08:42:27.892Z",
             "profileImageUrl": "https://dg29r8w9muxhn.cloudfront.net/projects/GV/ko0/userProfile/2d70ad88-fae8-4d89-a5b1-7dc35995c428.jpeg",
             "statusMessage": "열쇠약탈 대못박음",
             "mbti": 0,
             "gender": 0
         },
-        "score": -1,
+        "score": 468800,
         "ranking": 0
     },
     {
@@ -1958,15 +1958,15 @@
             "equipmentRideId": 18,
             "profileDesignFrameId": 27,
             "profileDesignTitleId": 12,
-            "bestWaveCode": 144007003,
-            "bestFishLevel": 5265,
-            "updateTime": "2026-02-22T23:42:30.060Z",
+            "bestWaveCode": 144007001,
+            "bestFishLevel": 5280,
+            "updateTime": "2026-02-23T08:21:54.331Z",
             "profileImageUrl": "https://dg29r8w9muxhn.cloudfront.net/projects/GV/ko0/userProfile/857bf20c-ec9a-4030-b916-e521807cd1af.jpeg",
             "statusMessage": "킁킁",
             "mbti": 15,
             "gender": 3
         },
-        "score": -1,
+        "score": 270100,
         "ranking": 1
     },
     {
@@ -1983,15 +1983,15 @@
             "equipmentRideId": 20,
             "profileDesignFrameId": 64,
             "profileDesignTitleId": 8,
-            "bestWaveCode": 184005008,
-            "bestFishLevel": 8118,
-            "updateTime": "2026-02-22T23:53:11.184Z",
+            "bestWaveCode": 184001007,
+            "bestFishLevel": 8133,
+            "updateTime": "2026-02-23T08:41:59.652Z",
             "profileImageUrl": "https://dg29r8w9muxhn.cloudfront.net/projects/GV/ko0/userProfile/ee0ab53a-3f4e-41ca-b11b-424ac988b1ce.jpeg",
             "statusMessage": "승용차 문을 세게 닫으면 안되는 이유는?",
             "mbti": 8,
             "gender": 1
         },
-        "score": -1,
+        "score": 251900,
         "ranking": 2
     },
     {
@@ -2008,14 +2008,14 @@
             "equipmentRideId": 13,
             "profileDesignFrameId": 34,
             "profileDesignTitleId": 73,
-            "bestWaveCode": 160001004,
+            "bestWaveCode": 160001009,
             "bestFishLevel": 6457,
-            "updateTime": "2026-02-22T23:07:46.893Z",
+            "updateTime": "2026-02-23T03:20:41.764Z",
             "statusMessage": "열약, 대못등 비매너 행위시 끝까지 갑니다",
             "mbti": 0,
             "gender": 0
         },
-        "score": -1,
+        "score": 232575,
         "ranking": 3
     },
     {
@@ -2032,15 +2032,15 @@
             "equipmentRideId": 18,
             "profileDesignFrameId": 77,
             "profileDesignTitleId": 33,
-            "bestWaveCode": 181004007,
-            "bestFishLevel": 7214,
-            "updateTime": "2026-02-22T23:53:02.255Z",
+            "bestWaveCode": 181005007,
+            "bestFishLevel": 7234,
+            "updateTime": "2026-02-23T08:42:27.463Z",
             "profileImageUrl": "https://dg29r8w9muxhn.cloudfront.net/projects/GV/ko0/userProfile/fd778ae2-e259-46f4-9a84-e6b319bdc832.jpeg",
             "statusMessage": "2026-02-20 천바오 떠나다.. T.T",
             "mbti": 10,
             "gender": 2
         },
-        "score": -1,
+        "score": 217540,
         "ranking": 4
     },
     {
@@ -2057,14 +2057,14 @@
             "equipmentRideId": 22,
             "profileDesignFrameId": 83,
             "profileDesignTitleId": 24,
-            "bestWaveCode": 130003000,
-            "bestFishLevel": 4483,
-            "updateTime": "2026-02-22T22:55:59.884Z",
+            "bestWaveCode": 130002006,
+            "bestFishLevel": 4500,
+            "updateTime": "2026-02-23T08:07:16.152Z",
             "profileImageUrl": "https://dg29r8w9muxhn.cloudfront.net/projects/GV/ko0/userProfile/a08b5c32-41e5-4113-ab71-c33b9cc91139.jpeg",
             "mbti": 3,
             "gender": 1
         },
-        "score": -1,
+        "score": 27115,
         "ranking": 5
     },
     {
@@ -2081,14 +2081,14 @@
             "equipmentRideId": 11,
             "profileDesignFrameId": 78,
             "profileDesignTitleId": 9,
-            "bestWaveCode": 183006004,
-            "bestFishLevel": 7522,
-            "updateTime": "2026-02-22T23:40:26.508Z",
+            "bestWaveCode": 183006009,
+            "bestFishLevel": 7545,
+            "updateTime": "2026-02-23T08:22:00.290Z",
             "statusMessage": "25.10.8(832)-26.1.22(814)",
             "mbti": 0,
             "gender": 0
         },
-        "score": -1,
+        "score": 24595,
         "ranking": 6
     }
 ]

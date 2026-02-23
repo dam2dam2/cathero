@@ -187,69 +187,61 @@ def load_battle_data(guild: str) -> pd.DataFrame:
 
 # --- 계산 및 추정 엔진 ---
 
+BONUS_CANDIDATES = [0, 500, 1000, 1500, 2000, 2500, 3000]
+
 def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataFrame) -> List[Tuple[float, int]]:
-    """닉네임별 데이터를 바탕으로 격전지 점수와 추가 점수를 추정합니다."""
+    """닉네임별 데이터를 바탕으로 격전지 점수를 가중치 채점 방식으로 추정합니다."""
     if not scores: return []
     
-    # boss 데이터만 추출하여 추정에 사용
-    boss_scores = [s for s in scores if s.get("type") == "boss"]
+    # boss 데이터만 추출 (0 이상인 유효 점수만 사용)
+    boss_scores = [s for s in scores if s.get("type") == "boss" and s.get("score", 0) > 0]
     if not boss_scores: return []
 
-    # 1단계: 5의 배수인 점수들(신뢰 점수) 추출 및 유니크 값 정렬
-    reliable_vals = sorted(list(set(s.get("score", 0) for s in boss_scores if s.get("score", 0) % 5 == 0)), reverse=True)
+    candidate_scores = []
+    # b_val은 0.5 단위 고정
+    b_val_range = [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]
     
-    candidates = []
-
-    # 2단계: 신뢰 점수 간의 차이를 이용한 b_val 선추출 (가장 강력한 조건)
-    if len(reliable_vals) >= 2:
-        for b_val in [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]:
-            wave_p = 1000 + b_val * 10
-            # 모든 신뢰 점수 간의 차이가 wave_p의 배수인지 확인
-            is_consistent = True
-            for i in range(len(reliable_vals) - 1):
-                diff = reliable_vals[i] - reliable_vals[i+1]
-                if diff % wave_p != 0:
-                    is_consistent = False; break
+    # 1.08은 근사치이므로 주변 범위를 탐색하거나 오차를 허용
+    # 여기서는 각 b_val/bonus 조합이 전체 점수들과 얼마나 잘 어울리는지 점수를 매깁니다.
+    for b_val in b_val_range:
+        wave_p = 1000 + b_val * 10
+        for bonus in BONUS_CANDIDATES:
+            bonus_val = bonus * 10
+            total_match_score = 0
             
-            if is_consistent:
-                # 이 b_val에 맞는 bonus 탐색
-                for bonus in BONUS_CANDIDATES:
-                    if (reliable_vals[0] - bonus) % wave_p == 0:
-                        # 전체 boss_scores와 일치하는지 최종 검증
-                        all_match = True
-                        for s_item in boss_scores:
-                            s = s_item["score"]
-                            if s == bonus: continue
-                            if s < bonus or (s - bonus) % wave_p != 0:
-                                all_match = False; break
-                        
-                        if all_match:
-                            if (b_val, int(bonus)) not in candidates:
-                                candidates.append((b_val, int(bonus)))
+            for s_item in boss_scores:
+                s = s_item["score"]
+                if s < bonus_val: continue
+                
+                net_score = s - bonus_val
+                # 1. 정수 웨이브 여부 확인 (가장 강력한 증거)
+                if net_score % wave_p == 0:
+                    total_match_score += 10 # 정수 웨이브 일치
+                else:
+                    # 2. 소수점 웨이브 (약 1.08 비율 근처) 확인
+                    # (net_score / wave_p)가 예상 시간 범위 내에 있는지 등
+                    waves = net_score / wave_p
+                    time_est = waves * 1.08
+                    # 1200초(기본) + 추가초 범위 내라면 가능성 있음
+                    if 0 < time_est < 1500: # 대략적인 상한선
+                        total_match_score += 1 # 소수점 웨이브 가능성
+                
+            if total_match_score > 0:
+                candidate_scores.append(((b_val, bonus), total_match_score))
 
-    # 3단계: 2단계에서 실패했거나 신뢰 점수가 부족한 경우, 기존 방식(단일 기준점)으로 보완
-    if not candidates:
-        # 최신 순으로 정렬된 전체 보스 점수 사용
-        sorted_all = sorted(boss_scores, key=lambda x: str(x.get("updateTime", "")), reverse=True)
-        for ref_item in sorted_all:
-            ref_score = ref_item["score"]
-            for b_val in [x * 0.5 for x in range(int(BATTLE_MIN * 2), int(BATTLE_MAX * 2) + 1)]:
-                wave_p = 1000 + b_val * 10
-                for bonus in BONUS_CANDIDATES:
-                    if ref_score >= bonus and (ref_score - bonus) % wave_p == 0:
-                        all_match = True
-                        for other in boss_scores:
-                            s = other["score"]
-                            if s == bonus: continue
-                            if s < bonus or (s - bonus) % wave_p != 0:
-                                all_match = False; break
-                        if all_match:
-                            if (b_val, int(bonus)) not in candidates:
-                                candidates.append((b_val, int(bonus)))
-                if len(candidates) >= 3: break
-            if candidates: break
-
-    return candidates[:2]
+    # 점수 순으로 정렬하여 상위 후보 반환
+    candidate_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # 중복 제거 및 상위 3개 추출
+    seen = set()
+    final_cands = []
+    for cand, score in candidate_scores:
+        if cand not in seen:
+            final_cands.append(cand)
+            seen.add(cand)
+        if len(final_cands) >= 3: break
+        
+    return final_cands
 
 # --- 사이드바 설정 ---
 
@@ -339,7 +331,7 @@ with tab1:
         sec_p = wave_p * WAVE_MULTIPLIER
         
         # 추가 초 및 최대 획득 점수
-        total_score = user_data["score"].sum()
+        total_score = user_data[user_data["score"] > 0]["score"].sum()
         extra_sec = confirmed_extra_sec if confirmed_extra_sec is not None and not pd.isna(confirmed_extra_sec) else 0
         
         def calc_max(esec):
