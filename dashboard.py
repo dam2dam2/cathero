@@ -242,12 +242,11 @@ def estimate_battle_score(nickname: str, scores: List[Dict], common_df: pd.DataF
                 
                 if not found_match:
                     # 정수 웨이브가 아니면 소수점 웨이브 (시간 추정)
-                    # 1.08 기준 역산하여 시간대 확인
+                    # 1.08 기준 역산하여 시간대 확인 (raw wave 수와 초는 동일함)
                     raw_s = round(s / WAVE_MULTIPLIER)
                     net_score = raw_s - bonus_val
                     if net_score > 0:
-                        waves = net_score / wave_p
-                        time_est = waves * 1.08
+                        time_est = net_score / wave_p
                         if 0 < time_est < 1500:
                             total_match_score += 1
                 
@@ -362,7 +361,8 @@ with tab1:
                 if confirmed_bonus is None: confirmed_bonus = float(date_match.iloc[0].get("confirmed_bonus"))
                 if confirmed_extra_sec is None: confirmed_extra_sec = float(date_match.iloc[0].get("confirmed_extra"))
 
-        # 총점 먼저 계산 (개연성 검증용)
+        # 총점 및 참여 일수 계산 (최대치 계산용)
+        num_days = len(user_data["date"].unique()) if not user_data.empty else 1
         attack_count = len(user_data)
         total_score = user_data[user_data["score"] > 0]["score"].sum()
 
@@ -374,9 +374,9 @@ with tab1:
         if b_val == 0.0 or bonus_val == 0.0:
             if cands:
                 def get_max_for_cand(cb: float, cbo: float, extra: float):
-                    wp = 1000 + cb * 10
-                    # 사용자 요청 공식: ((시간 * 1wave점수 + 추가점수) * 1.08)
-                    return int(((BASE_SECONDS + extra) * wp + cbo * 10) * WAVE_MULTIPLIER)
+                    # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수*10) * 1.08
+                    wp = 1000.0 + cb * 10.0
+                    return int(((BASE_SECONDS + extra) * wp + cbo * 10.0) * WAVE_MULTIPLIER)
 
                 best_range_cand = None
                 found_plausible_in_range = False
@@ -391,11 +391,11 @@ with tab1:
                     if in_range and best_range_cand is None:
                         best_range_cand = (c_b_f, c_bonus_f)
                     
-                    # 개연성 검증
+                    # 개연성 검증 (일일 총합 기준)
                     tmp_extra = confirmed_extra_sec if confirmed_extra_sec is not None else 120.0
-                    tmp_total_max = get_max_for_cand(c_b_f, c_bonus_f, float(tmp_extra)) * attack_count
+                    tmp_day_max = get_max_for_cand(c_b_f, c_bonus_f, float(tmp_extra))
                     
-                    if tmp_total_max >= total_score:
+                    if (tmp_day_max * num_days) >= total_score:
                         if target_range_str != "-":
                             if in_range:
                                 b_val, bonus_val = c_b_f, c_bonus_f
@@ -423,20 +423,20 @@ with tab1:
         extra_sec = confirmed_extra_sec if confirmed_extra_sec is not None else 0.0
         
         def calc_max(esec: float):
-            # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수) * 1.08
-            return int(((BASE_SECONDS + esec) * wave_p + bonus_val * 10) * WAVE_MULTIPLIER)
+            # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수*10) * 1.08
+            return int(((BASE_SECONDS + esec) * wave_p + bonus_val * 10.0) * WAVE_MULTIPLIER)
 
-        # 개별 공격 당 최대치를 구한 뒤, 전체 공격 횟수를 곱함
+        # 개별 공격 당 최대치를 구한 뒤, 전체 날짜 수를 곱함 (공격 횟수 아님)
         max_score_single = calc_max(extra_sec)
-        # 0초 기준으로 총점보다 낮으면 상향 조정
+        # 0초 기준으로 총점보다 낮으면 상향 조정 (기간 전체 총점 vs 예산 합계)
         if confirmed_extra_sec is None:
             for es in EXTRA_SECONDS_CANDIDATES:
-                if calc_max(float(es)) * attack_count >= total_score:
+                if calc_max(float(es)) * num_days >= total_score:
                     extra_sec = float(es)
                     max_score_single = calc_max(extra_sec)
                     break
         
-        total_max_score = max_score_single * attack_count
+        total_max_score = max_score_single * num_days
 
         results.append({
             "닉네임": str(nick),
@@ -540,9 +540,10 @@ with tab5:
     c_bonus = bc2.selectbox("추가 점수", BONUS_CANDIDATES)
     c_extra = bc3.selectbox("추가 초", EXTRA_SECONDS_CANDIDATES)
     
-    c_wave = 1000 + c_battle * 10
+    c_wave = 1000.0 + c_battle * 10.0
     c_sec = c_wave * WAVE_MULTIPLIER
-    c_max = c_sec * (BASE_SECONDS + c_extra) + c_bonus * 10
+    # 사용자 요청 공식: ((1200 + 추가초) * 1wave점수 + 추가점수*10) * 1.08
+    c_max = ((BASE_SECONDS + c_extra) * c_wave + c_bonus * 10.0) * WAVE_MULTIPLIER
     
     st.info(f"""
     **계산 결과**
