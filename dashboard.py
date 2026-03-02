@@ -29,6 +29,9 @@ BATTLE_MAX = 250.0
 BONUS_CANDIDATES = [0, 500, 1000, 1500, 2000, 2500, 3000]
 EXTRA_SECONDS_CANDIDATES = [0, 20, 60, 120]
 
+# --- 전역 상수 ---
+# WAVE_MULTIPLIER = 1.08  # 이미 상단에 정의됨
+
 # --- 데이터 로딩 함수 ---
 
 
@@ -273,8 +276,6 @@ def load_battle_data(guild: str) -> pd.DataFrame:
 
 # --- 계산 및 추정 엔진 ---
 
-BONUS_CANDIDATES = [0, 500, 1000, 1500, 2000, 2500, 3000]
-
 
 def estimate_battle_score(
     nickname: str,
@@ -309,7 +310,7 @@ def estimate_battle_score(
         in_tag_range = min_r <= b_val <= max_r
 
         for bonus in BONUS_CANDIDATES:
-            bonus_val_f = float(bonus) * 10.0
+            bonus_val = float(bonus) * 10.0
             tm_score: float = 0.0
             if in_tag_range:
                 tm_score = tm_score + 50.0
@@ -346,7 +347,7 @@ def estimate_battle_score(
                     # 정수 웨이브가 아니면 소수점 웨이브 (시간 추정)
                     # 1.08 기준 역산하여 시간대 확인 (raw wave 수와 초는 동일함)
                     raw_s_v = int(float(s) / float(WAVE_MULTIPLIER) + 0.5)
-                    net_score_v = float(raw_s_v) - float(bonus_val_f)
+                    net_score_v = float(raw_s_v) - float(bonus_val)
                     if net_score_v > 0:
                         time_est = net_score_v / wave_p
                         if 0.0 < time_est < 1500.0:
