@@ -4,7 +4,7 @@ nickname,battle_score,add_second,add_score,range,exclude
 버폭
 뺌삐삐
 doyoungkim
-캣히어럼
+켓히어럼
 쉐프
 김국밥씨
 영화별
