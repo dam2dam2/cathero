@@ -270,6 +270,50 @@ def load_battle_data(guild: str) -> pd.DataFrame:
             except:
                 pass
 
+        # 추가 보스 데이터 처리 (add_{order}.txt 또는 add_{order}.csv)
+        for filename in os.listdir(date_dir):
+            match = re.match(r"add_(\d+)\.(txt|csv)", filename)
+            if match:
+                order = match.group(1)
+                file_path = os.path.join(date_dir, filename)
+                try:
+                    # '.'과 같은 무효 데이터를 처리하기 위해 na_values 설정
+                    adf = pd.read_csv(file_path, na_values=[".", "-", ""])
+                    adf = adf.dropna(
+                        subset=["score", "점수"], how="all", errors="ignore"
+                    )
+
+                    # 컬럼명 정규화
+                    rename_map = {
+                        "nickname": "nickname",
+                        "닉네임": "nickname",
+                        "score": "score",
+                        "점수": "score",
+                    }
+                    adf.columns = [
+                        rename_map.get(c.lower(), c.lower()) for c in adf.columns
+                    ]
+
+                    if "nickname" in adf.columns and "score" in adf.columns:
+                        for _, r in adf.iterrows():
+                            s_val = r.get("score")
+                            if pd.notna(s_val):
+                                rows.append(
+                                    {
+                                        "date": date_str,
+                                        "nickname": str(
+                                            r.get("nickname", "Unknown")
+                                        ).strip(),
+                                        "score": int(float(s_val)),
+                                        "boss_order": str(order),
+                                        "type": "boss",
+                                        "updateTime": "",
+                                    }
+                                )
+                except Exception as e:
+                    # 로딩 중 오류 발생 시 사용자에게 알림 (디버깅용)
+                    st.warning(f"{filename} 로드 실패: {e}")
+
     df = pd.DataFrame(rows)
     return df
 
