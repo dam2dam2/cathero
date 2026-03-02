@@ -1,0 +1,2 @@
+nickname,score
+홍형,1

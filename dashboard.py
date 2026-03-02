@@ -279,11 +279,8 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                 try:
                     # '.'과 같은 무효 데이터를 처리하기 위해 na_values 설정
                     adf = pd.read_csv(file_path, na_values=[".", "-", ""])
-                    adf = adf.dropna(
-                        subset=["score", "점수"], how="all", errors="ignore"
-                    )
 
-                    # 컬럼명 정규화
+                    # 컬럼명 정규화 먼저 수행
                     rename_map = {
                         "nickname": "nickname",
                         "닉네임": "nickname",
@@ -294,7 +291,12 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                         rename_map.get(c.lower(), c.lower()) for c in adf.columns
                     ]
 
-                    if "nickname" in adf.columns and "score" in adf.columns:
+                    if "score" in adf.columns:
+                        # 점수 컬럼을 숫자로 변환하고 NaN 제거
+                        adf["score"] = pd.to_numeric(adf["score"], errors="coerce")
+                        adf = adf.dropna(subset=["score"])
+
+                    if "nickname" in adf.columns and not adf.empty:
                         for _, r in adf.iterrows():
                             s_val = r.get("score")
                             if pd.notna(s_val):

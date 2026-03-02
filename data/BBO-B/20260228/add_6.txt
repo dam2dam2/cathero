@@ -1,1 +1,2 @@
 nickname,score
+이글루,1
