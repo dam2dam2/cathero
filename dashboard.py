@@ -149,7 +149,15 @@ def load_battle_data(guild: str) -> pd.DataFrame:
     for date_str in sorted([d for d in os.listdir(guild_dir) if d.isdigit()]):
         date_dir = os.path.join(guild_dir, date_str)
 
-        # boss.txt (JSON) 확인
+        # 0. 해당 날짜의 추가 파일 목록 파악
+        add_files_orders: List[int] = []
+        for fn in os.listdir(date_dir):
+            m = re.match(r"add_(\d+)\.(txt|csv)", fn)
+            if m:
+                add_files_orders.append(int(m.group(1)))
+        add_files_orders.sort()
+
+        # 경로 변수 복구
         boss_txt = os.path.join(date_dir, "boss.txt")
         boss_csv = os.path.join(date_dir, "boss.csv")
         normal_txt = os.path.join(date_dir, "normal.txt")
@@ -170,6 +178,12 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                         if isinstance(data, dict):
                             data = [data]  # 단일 객체 대응
                         for boss_idx, boss_data_list in enumerate(data):
+                            # 시프트 로직 적용
+                            final_order: int = int(boss_idx + 1)
+                            for k in add_files_orders:
+                                if int(k) <= final_order:
+                                    final_order = final_order + 1
+
                             # data가 [[player, player], [player, player]] 구조인 경우 (보스 순서대로)
                             if isinstance(boss_data_list, list):
                                 for p in boss_data_list:
@@ -182,7 +196,7 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                                             ).strip(),
                                             "score": int(p.get("score", 0)),
                                             "updateTime": preview.get("updateTime", ""),
-                                            "boss_order": str(boss_idx + 1),
+                                            "boss_order": str(final_order),
                                             "type": "boss",
                                         }
                                     )
@@ -199,7 +213,7 @@ def load_battle_data(guild: str) -> pd.DataFrame:
                                                 boss_data_list.get("score", 0)
                                             ),
                                             "updateTime": preview.get("updateTime", ""),
-                                            "boss_order": "1",
+                                            "boss_order": str(final_order),
                                             "type": "boss",
                                         }
                                     )
@@ -209,12 +223,23 @@ def load_battle_data(guild: str) -> pd.DataFrame:
             try:
                 bdf = pd.read_csv(boss_csv)
                 for _, r in bdf.iterrows():
+                    # CSV 파일의 인덱스도 시프트 적용 (필요 시)
+                    orig_order_str = str(r.get("boss_order", r.get("order", "1")))
+                    if orig_order_str.isdigit():
+                        f_order: int = int(orig_order_str)
+                        for k in add_files_orders:
+                            if int(k) <= f_order:
+                                f_order = f_order + 1
+                        final_order_str = str(f_order)
+                    else:
+                        final_order_str = orig_order_str
+
                     rows.append(
                         {
                             "date": date_str,
                             "nickname": str(r.get("nickname", "Unknown")).strip(),
                             "score": int(r.get("score", 0)),
-                            "boss_order": str(r.get("boss_order", r.get("order", "1"))),
+                            "boss_order": final_order_str,
                             "type": "boss",
                             "updateTime": "",
                         }
@@ -443,6 +468,10 @@ if not guilds_raw:
 # BBO-B 우선 배치
 guilds = ["BBO-B"] if "BBO-B" in guilds_raw else []
 guilds += sorted([g for g in guilds_raw if g != "BBO-B"])
+
+if st.sidebar.button("데이터 새로고침 🔄"):
+    st.cache_data.clear()
+    st.rerun()
 
 sel_guild = st.sidebar.selectbox("길드 선택", guilds, index=0)
 
@@ -714,12 +743,7 @@ with tab2:
 
 with tab3:
     st.subheader("🚫 미참여 현황")
-    roster = sorted(
-        list(
-            {str(n) for n in common_df_all["nickname"].unique()}
-            | {str(n) for n in all_data_df["nickname"].unique()}
-        )
-    )
+    roster = sorted(list({str(n) for n in filtered_df["nickname"].unique()}))
 
     if mode == "단일 날짜":
         df_date = filtered_df[filtered_df["type"] == "boss"]
