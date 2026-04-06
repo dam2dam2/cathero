@@ -82,7 +82,7 @@ cols = st.columns(num_players)
 player_scores = []
 for i in range(num_players):
     with cols[i]:
-        score = st.number_input(f"인원 {i+1} 격전지 점수", min_value=0, value=120, key=f"p{i}")
+        score = st.number_input(f"인원 {i+1} 격전지 점수", min_value=0.0, value=120.0, step=0.1, format="%.1f", key=f"p{i}")
         player_scores.append(score)
 
 # 계산 공통 로직
