@@ -89,6 +89,15 @@ for i in range(num_players):
 wave_powers = [1000 + (s * 10) for s in player_scores]
 total_wp = sum(wave_powers)
 
+# --- 메인: 각 인원별 비율 표시 ---
+st.write("")
+st.subheader("📊 인원별 점수 배분 비율")
+ratio_cols = st.columns(num_players)
+for i in range(num_players):
+    ratio = (wave_powers[i] / total_wp) * 100
+    with ratio_cols[i]:
+        st.metric(f"인원 {i+1} 비중", f"{ratio:.1f}%")
+
 st.divider()
 
 # --- 보스 레벨별 체력 배분 요약표 (한눈에 보기) ---
@@ -105,8 +114,7 @@ for lv in range(boss_config["min_lv"], boss_config["max_lv"] + 1):
     
     row = {"레벨": f"Lv.{lv}", "보스 체력": f"{lv_hp:,}"}
     for i, ts in enumerate(lv_targets):
-        ratio = (wave_powers[i] / total_wp) * 100
-        row[f"인원 {i+1} 목표"] = f"{ts:,} ({ratio:.1f}%)"
+        row[f"인원 {i+1} 목표"] = f"{ts:,}"
     summary_rows.append(row)
 
 summary_df = pd.DataFrame(summary_rows)
