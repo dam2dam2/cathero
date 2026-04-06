@@ -105,7 +105,8 @@ for lv in range(boss_config["min_lv"], boss_config["max_lv"] + 1):
     
     row = {"레벨": f"Lv.{lv}", "보스 체력": f"{lv_hp:,}"}
     for i, ts in enumerate(lv_targets):
-        row[f"인원 {i+1} 목표"] = f"{ts:,}"
+        ratio = (wave_powers[i] / total_wp) * 100
+        row[f"인원 {i+1} 목표"] = f"{ts:,} ({ratio:.1f}%)"
     summary_rows.append(row)
 
 summary_df = pd.DataFrame(summary_rows)
